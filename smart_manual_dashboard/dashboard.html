@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Smart Manual · Dashboard</title>
+<!--
+  Screen 2 of the context-aware manual study: the dashboard from the
+  "CARLA Test Dashboard" design, drawn at 1920x1080 and scaled to fit.
+
+  The page renders whatever state the driver script streams from /events
+  (server-sent events, one JSON object per message). Keys missing from a
+  message keep their value from DEFAULTS below, so the script only has to
+  send what it measures. Today that is the speed; the other panels follow
+  the same props as the design and are ready to be fed.
+-->
+<style>
+@font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow'; font-weight: 600; src: url(fonts/Barlow-SemiBold.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow'; font-weight: 700; src: url(fonts/Barlow-Bold.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 600; src: url(fonts/BarlowSemiCondensed-SemiBold.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Semi Condensed'; font-weight: 700; src: url(fonts/BarlowSemiCondensed-Bold.woff2) format('woff2'); }
+
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0B0E13; cursor: none; }
+button { font: inherit; }
+#stage { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#offline { position: absolute; right: 48px; bottom: 12px; font: 600 14px 'Barlow', sans-serif; letter-spacing: 0.06em; color: #F5A524; display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="offline">NO DATA FROM CARLA</div>
+<script>
+'use strict';
+
+// Values for everything the script does not send yet. The assists start OFF
+// and the tip panel hidden, so nothing on screen claims a state the car is
+// not in.
+var DEFAULTS = {
+  activeAssist: 'None',   // None | Cruise | Cruise standby | ACC | Autopilot
+  level: 'Experienced',   // Beginner | Experienced | Expert
+  speed: null,            // km/h; null until the first reading
+  setSpeed: 100,
+  accGap: 3,              // 1..4
+  apTarget: 100,
+  apDistance: 25,
+  appliedThrottle: 0,     // %
+  driverPedal: 0,         // %
+  brake: 0,               // %
+  gear: 'D',              // P | R | N | D
+  driveMode: 'Normal',    // Eco | Normal | Sport
+  regenLevel: 2,          // 0..3
+  showTip: false,
+  tip: null,              // {title, body, why, key, input}; null uses the level's sample tip
+  accent: '#4DA3FF'
+};
+
+var SAMPLE_TIPS = {
+  Beginner: {
+    title: 'Cruise control holds your speed for you',
+    body: 'Press SET to keep driving at your current speed. Tap the brake at any moment and cruise control switches off.',
+    why: 'Why now: steady motorway speed for 20 seconds',
+    key: 'SET',
+    input: 'Shifter button [1]'
+  },
+  Experienced: {
+    title: 'Change your set speed without braking',
+    body: 'Use + and − to adjust the set speed in 5 km/h steps. After braking, RES brings back the speed you had set.',
+    why: 'Why now: the speed limit changed to 100 km/h',
+    key: '+ / −',
+    input: 'D-pad up / down'
+  },
+  Expert: {
+    title: 'A car is merging ahead',
+    body: 'Adaptive cruise can react late when a car cuts in. Keep your foot ready over the brake. In dense traffic a shorter gap leaves less room to cut in.',
+    why: 'Why now: merge lane ahead · adaptive cruise active',
+    key: 'GAP',
+    input: 'Shifter button [3]'
+  }
+};
+
+var SPEED_MAX = 160;
+
+function esc(v) {
+  return String(v).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function pct(v) { return Math.max(0, Math.min(100, v)) + '%'; }
+
+function chip(text) {
+  return '<span style="padding: 4px 10px; border-radius: 6px; border: 1px solid #3A4250; font-size: 14px; font-weight: 600; color: #C9D0D8">' + text + '</span>';
+}
+
+function render(p) {
+  var accent = p.accent;
+  var assist = p.activeAssist;
+  var level = p.level;
+  var speed = p.speed;
+  var setSpeed = p.setSpeed;
+  var gap = Math.max(1, Math.min(4, p.accGap));
+  var applied = p.appliedThrottle;
+  var pedal = p.driverPedal;
+  var brake = p.brake;
+  var regen = Math.max(0, Math.min(3, p.regenLevel));
+
+  var active = { border: accent, bg: '#132238', chipText: 'ACTIVE', chipBg: accent, chipFg: '#0B0E13', value: '#E8EAED' };
+  var standby = { border: '#6B5217', bg: '#1A1710', chipText: 'STANDBY', chipBg: '#3A2E14', chipFg: '#F5A524', value: '#E8EAED' };
+  var off = { border: '#262D38', bg: '#141920', chipText: 'OFF', chipBg: '#262D38', chipFg: '#AEB6C0', value: '#7F8995' };
+
+  var cc = assist === 'Cruise' ? active : (assist === 'Cruise standby' ? standby : off);
+  var acc = assist === 'ACC' ? active : off;
+  var ap = assist === 'Autopilot' ? active : off;
+
+  var gapSeconds = ['1.0 s', '1.5 s', '2.0 s', '2.5 s'][gap - 1];
+  var markerSpeed = assist === 'Autopilot' ? p.apTarget : setSpeed;
+  var showMarker = assist !== 'None';
+  var regenNames = ['Off', 'Low', 'Medium', 'High'];
+  var tip = p.tip || SAMPLE_TIPS[level] || SAMPLE_TIPS.Experienced;
+
+  var pedalStatus;
+  if (assist === 'None' || assist === 'Cruise standby') {
+    pedalStatus = { text: 'Manual control', bg: '#262D38', fg: '#C9D0D8' };
+  } else if (pedal > applied) {
+    pedalStatus = { text: 'Driver override', bg: '#3A2E14', fg: '#F5A524' };
+  } else {
+    pedalStatus = { text: 'System controlled', bg: '#132238', fg: accent };
+  }
+
+  function card(s, inner) {
+    return '<div style="flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + inner + '</div>';
+  }
+  function cardHead(title, s) {
+    return '<div style="display: flex; align-items: center; justify-content: space-between">' +
+      '<span style="font-size: 24px; font-weight: 600">' + title + '</span>' +
+      '<span style="padding: 4px 12px; border-radius: 999px; font-size: 14px; font-weight: 700; letter-spacing: 0.06em; background: ' + s.chipBg + '; color: ' + s.chipFg + '">' + s.chipText + '</span>' +
+      '</div>';
+  }
+
+  var h = '';
+  h += '<div style="width: 1920px; height: 1080px; box-sizing: border-box; padding: 36px 48px; display: flex; flex-direction: column; gap: 24px; background: #0B0E13; color: #E8EAED; font-family: \'Barlow\', system-ui, sans-serif">';
+
+  // Header
+  h += '<header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between">' +
+    '<div style="display: flex; align-items: baseline; gap: 18px">' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-weight: 700; font-size: 28px; letter-spacing: 0.08em">SMART MANUAL</span>' +
+    '<span style="font-size: 19px; color: #9AA3AE">Context-aware driving guide</span>' +
+    '</div>' +
+    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">TIPS TUNED TO</span>' +
+    '<div style="display: flex; gap: 6px; padding: 5px; border-radius: 12px; background: #141920; border: 1px solid #262D38">';
+  ['Beginner', 'Experienced', 'Expert'].forEach(function (l) {
+    var on = l === level;
+    h += '<span style="padding: 8px 18px; border-radius: 8px; font-size: 17px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + l + '</span>';
+  });
+  h += '</div></div></header>';
+
+  h += '<main style="flex-grow: 1; min-height: 0; display: flex; gap: 24px">';
+
+  // Speed assist column
+  h += '<section aria-label="Speed assist" style="width: 560px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px">' +
+    '<h2 style="margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">SPEED ASSIST · ONE ACTIVE AT A TIME</h2>';
+
+  h += card(cc, cardHead('Cruise control', cc) +
+    '<div style="display: flex; align-items: baseline; gap: 10px">' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(setSpeed) + '</span>' +
+    '<span style="font-size: 18px; color: #9AA3AE">km/h set speed</span></div>' +
+    '<div style="display: flex; gap: 8px">' + chip('SET') + chip('+ / −') + chip('CANCEL') + chip('RES') + '</div>');
+
+  var bars = '';
+  [4, 3, 2, 1].forEach(function (n) {
+    var bg = n <= gap ? (assist === 'ACC' ? accent : '#7F8995') : '#262D38';
+    bars += '<span style="display: block; height: 5px; border-radius: 3px; width: ' + (24 + (5 - n) * 14) + 'px; background: ' + bg + '"></span>';
+  });
+  h += card(acc, cardHead('Adaptive cruise', acc) +
+    '<div style="display: flex; align-items: center; gap: 28px">' +
+    '<div style="display: flex; align-items: baseline; gap: 10px">' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(setSpeed) + '</span>' +
+    '<span style="font-size: 18px; color: #9AA3AE">km/h</span></div>' +
+    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + bars +
+    '<svg width="40" height="26" viewBox="0 0 40 26" fill="none" stroke="#C9D0D8" stroke-width="2" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="10" x2="28" y2="10"></line></svg>' +
+    '</div>' +
+    '<div style="display: flex; flex-direction: column; gap: 2px">' +
+    '<span style="font-size: 22px; font-weight: 600; color: ' + acc.value + '">Gap ' + gap + '</span>' +
+    '<span style="font-size: 16px; color: #9AA3AE">' + gapSeconds + ' time gap</span>' +
+    '</div></div></div>' +
+    '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('GAP') + '</div>');
+
+  h += card(ap, cardHead('Autopilot', ap) +
+    '<div style="display: flex; gap: 40px">' +
+    '<div style="display: flex; flex-direction: column; gap: 2px">' +
+    '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">TARGET SPEED</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 44px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apTarget) + ' <span style="font-size: 18px; color: #9AA3AE">km/h</span></span>' +
+    '</div>' +
+    '<div style="display: flex; flex-direction: column; gap: 2px">' +
+    '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">FOLLOWING DISTANCE</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 44px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apDistance) + ' <span style="font-size: 18px; color: #9AA3AE">m</span></span>' +
+    '</div></div>' +
+    '<div style="display: flex; gap: 8px; align-items: center">' + chip('ON / OFF') + chip('SPEED ±') + chip('DIST ±') +
+    '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Throttle overrides</span></div>');
+  h += '</section>';
+
+  // Speed and gear
+  h += '<section aria-label="Speed and gear" style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 32px 48px; border-radius: 20px; background: #10141A; border: 1px solid #1E242D; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px">' +
+    '<div style="display: flex; flex-direction: column; align-items: center">' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 220px; font-weight: 600; line-height: 0.88; font-variant-numeric: tabular-nums">' + (speed === null ? '–' : esc(speed)) + '</span>' +
+    '<div style="display: flex; align-items: center; gap: 16px; margin-top: 8px">' +
+    '<span style="font-size: 26px; color: #9AA3AE">km/h</span>' +
+    (showMarker ? '<span style="padding: 4px 12px; border-radius: 8px; font-size: 18px; font-weight: 700; letter-spacing: 0.04em; background: #132238; color: ' + accent + '">SET ' + esc(markerSpeed) + '</span>' : '') +
+    '</div></div>';
+
+  h += '<div style="width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 6px">' +
+    '<div style="position: relative; height: 10px; border-radius: 5px; background: #262D38">' +
+    '<div style="height: 10px; border-radius: 5px; background: #E8EAED; width: ' + pct((speed || 0) / SPEED_MAX * 100) + '"></div>' +
+    (showMarker ? '<div style="position: absolute; top: -7px; width: 4px; height: 24px; border-radius: 2px; transform: translateX(-50%); background: ' + accent + '; left: ' + pct(markerSpeed / SPEED_MAX * 100) + '"></div>' : '') +
+    '</div>' +
+    '<div style="display: flex; justify-content: space-between; font-size: 14px; color: #7F8995">' +
+    '<span>0</span><span>40</span><span>80</span><span>120</span><span>160</span></div></div>';
+
+  h += '<div role="img" aria-label="Gear selector" style="display: flex; gap: 12px">';
+  ['P', 'R', 'N', 'D'].forEach(function (g) {
+    var on = g === p.gear;
+    h += '<span style="width: 88px; height: 76px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 46px; font-weight: 700; border: 2px solid ' + (on ? '#E8EAED' : '#262D38') + '; background: ' + (on ? '#E8EAED' : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#7F8995') + '">' + g + '</span>';
+  });
+  h += '</div>';
+
+  h += '<div style="width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 12px">' +
+    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<span style="width: 90px; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">THROTTLE</span>' +
+    '<div style="flex-grow: 1; position: relative; height: 14px; border-radius: 7px; background: #262D38">' +
+    '<div style="height: 14px; border-radius: 7px; background: ' + accent + '; width: ' + pct(applied) + '"></div>' +
+    '<div style="position: absolute; top: -5px; width: 4px; height: 24px; border-radius: 2px; transform: translateX(-50%); background: #E8EAED; left: ' + pct(pedal) + '"></div>' +
+    '</div>' +
+    '<span style="width: 56px; text-align: right; font-size: 18px; font-variant-numeric: tabular-nums">' + esc(applied) + '%</span></div>' +
+    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<span style="width: 90px; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">BRAKE</span>' +
+    '<div style="flex-grow: 1; height: 14px; border-radius: 7px; background: #262D38">' +
+    '<div style="height: 14px; border-radius: 7px; background: #F5A524; width: ' + pct(brake) + '"></div></div>' +
+    '<span style="width: 56px; text-align: right; font-size: 18px; font-variant-numeric: tabular-nums">' + esc(brake) + '%</span></div>' +
+    '<div style="display: flex; align-items: center; justify-content: space-between">' +
+    '<span style="font-size: 15px; color: #9AA3AE">Bar = applied throttle · white line = your pedal (' + esc(pedal) + '%)</span>' +
+    '<span style="padding: 4px 12px; border-radius: 999px; font-size: 15px; font-weight: 700; background: ' + pedalStatus.bg + '; color: ' + pedalStatus.fg + '">' + pedalStatus.text + '</span>' +
+    '</div></div>';
+  h += '</section>';
+
+  // Drivetrain column
+  h += '<section aria-label="Drivetrain" style="width: 560px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px">' +
+    '<h2 style="margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">DRIVETRAIN</h2>' +
+    '<div style="flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' +
+    '<span style="font-size: 24px; font-weight: 600">Drive mode</span>' +
+    '<div style="display: flex; gap: 6px; padding: 6px; border-radius: 12px; background: #0B0E13">';
+  ['Eco', 'Normal', 'Sport'].forEach(function (m) {
+    var on = m === p.driveMode;
+    h += '<span style="flex-grow: 1; flex-basis: 0; text-align: center; padding: 14px 0; border-radius: 8px; font-size: 22px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + m + '</span>';
+  });
+  h += '</div>' +
+    '<div style="display: flex; justify-content: space-between; font-size: 16px; color: #9AA3AE">' +
+    '<span>‹ Left paddle</span><span>Right paddle ›</span></div></div>';
+
+  h += '<div style="flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' +
+    '<div style="display: flex; align-items: baseline; justify-content: space-between">' +
+    '<span style="font-size: 24px; font-weight: 600">Regenerative braking</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 34px; font-weight: 600; color: ' + accent + '">' + regenNames[regen] + '</span>' +
+    '</div><div style="display: flex; gap: 8px">';
+  [1, 2, 3].forEach(function (n) {
+    var on = n <= regen;
+    h += '<div style="flex-grow: 1; flex-basis: 0; display: flex; flex-direction: column; gap: 8px">' +
+      '<span style="display: block; height: 16px; border-radius: 4px; background: ' + (on ? accent : '#262D38') + '"></span>' +
+      '<span style="font-size: 15px; text-align: center; color: ' + (on ? '#E8EAED' : '#7F8995') + '">' + regenNames[n] + '</span></div>';
+  });
+  h += '</div>' +
+    '<div style="display: flex; justify-content: space-between; font-size: 16px; color: #9AA3AE">' +
+    '<span>How hard the car slows when you lift off</span><span>Wheel buttons ▲ ▼</span></div></div>';
+  h += '</section></main>';
+
+  // Manual tip
+  if (p.showTip) {
+    h += '<section aria-label="Manual tip" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; background: #141920; border: 2px solid #2B3A52; display: flex; gap: 40px">' +
+      '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px">' +
+      '<div style="display: flex; align-items: center; gap: 12px">' +
+      '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: ' + accent + '">MANUAL TIP</span>' +
+      '<span style="font-size: 15px; color: #9AA3AE">for ' + esc(level) + ' drivers</span></div>' +
+      '<h3 style="margin: 0; font-size: 34px; font-weight: 600; line-height: 1.15">' + esc(tip.title) + '</h3>' +
+      '<p style="margin: 0; max-width: 980px; font-size: 22px; line-height: 1.4; color: #C9D0D8">' + esc(tip.body) + '</p>' +
+      '<span style="font-size: 17px; color: #9AA3AE">' + esc(tip.why) + '</span></div>' +
+      '<div style="width: 400px; flex-shrink: 0; display: flex; flex-direction: column; justify-content: space-between; padding-left: 40px; border-left: 1px solid #262D38">' +
+      '<div style="display: flex; flex-direction: column; gap: 10px">' +
+      '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">CONTROL</span>' +
+      '<div style="display: flex; align-items: center; gap: 16px">' +
+      '<span style="min-width: 96px; height: 64px; box-sizing: border-box; padding: 0 18px; display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 2px solid ' + accent + '; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 30px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>' +
+      '<span style="font-size: 18px; line-height: 1.3; color: #C9D0D8">On the G25:<br>' + esc(tip.input) + '</span>' +
+      '</div></div>' +
+      '<div style="display: flex; gap: 10px">' +
+      '<button type="button" style="height: 48px; padding: 0 20px; border-radius: 10px; border: 1px solid #3A4250; background: transparent; color: #E8EAED; font-size: 17px; font-weight: 600">Dismiss</button>' +
+      '<button type="button" style="height: 48px; padding: 0 20px; border-radius: 10px; border: 1px solid #3A4250; background: transparent; color: #E8EAED; font-size: 17px; font-weight: 600">Turn tips off</button>' +
+      '</div></div></section>';
+  } else {
+    h += '<section aria-label="Manual tips off" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; border: 2px dashed #262D38; display: flex; align-items: center; justify-content: center">' +
+      '<span style="font-size: 22px; color: #9AA3AE">Tips are off. The dashboard shows vehicle status only.</span></section>';
+  }
+
+  h += '</div>';
+  return h;
+}
+
+var stage = document.getElementById('stage');
+var offline = document.getElementById('offline');
+var state = Object.assign({}, DEFAULTS);
+var shown = '';
+
+function draw() {
+  var html = render(state);
+  if (html !== shown) {
+    stage.innerHTML = html;
+    shown = html;
+  }
+}
+
+function fit() {
+  var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  stage.style.transform = 'scale(' + s + ') translate(-50%, -50%)';
+}
+
+window.addEventListener('resize', fit);
+fit();
+draw();
+
+var events = new EventSource('events');
+events.onmessage = function (e) {
+  Object.assign(state, JSON.parse(e.data));
+  offline.style.display = 'none';
+  draw();
+};
+events.onerror = function () { offline.style.display = 'block'; };
+// Sent when the driver script exits.
+events.addEventListener('close', function () {
+  events.close();
+  window.close();
+});
+</script>
+</body>
+</html>

@@ -13,6 +13,10 @@ driver's-eye camera. Backspace cycles the cars in DRIVER_EYES (Lincoln MKZ,
 Dodge Charger, Nissan Patrol, Ford taxi, Mini Cooper), each with a tuned eye
 position; Tab cycles the camera views. Pass --filter for the original
 random-car behaviour.
+
+A second window opens with the smart-manual dashboard (smart_manual_dashboard/),
+full screen on the second monitor, showing the car's speed. --no-dashboard
+turns it off.
 """
 
 """
@@ -127,6 +131,8 @@ try:
     import numpy as np
 except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
+
+from smart_manual_dashboard import Dashboard, focus_window
 
 OBJECT_TO_COLOR = [
     (255, 255, 255),
@@ -449,7 +455,7 @@ class KeyboardControl(object):
             self._control = carla.VehicleControl()
             self._ackermann_control = carla.VehicleAckermannControl()
             self._lights = carla.VehicleLightState.NONE
-            world.player.set_autopilot(self._autopilot_enabled)
+            world.player.set_autopilot(self._autopilot_enabled, world.traffic_manager.get_port())
             world.player.set_light_state(self._lights)
         elif isinstance(world.player, carla.Walker):
             self._control = carla.WalkerControl()
@@ -471,9 +477,9 @@ class KeyboardControl(object):
                     return True
                 elif event.key == K_BACKSPACE:
                     if self._autopilot_enabled:
-                        world.player.set_autopilot(False)
+                        world.player.set_autopilot(False, world.traffic_manager.get_port())
                         world.restart()
-                        world.player.set_autopilot(True)
+                        world.player.set_autopilot(True, world.traffic_manager.get_port())
                     else:
                         world.restart()
                 elif event.key == K_F1:
@@ -558,7 +564,7 @@ class KeyboardControl(object):
                     world.destroy_sensors()
                     # disable autopilot
                     self._autopilot_enabled = False
-                    world.player.set_autopilot(self._autopilot_enabled)
+                    world.player.set_autopilot(self._autopilot_enabled, world.traffic_manager.get_port())
                     world.hud.notification("Replaying file 'manual_recording.rec'")
                     # replayer
                     client.replay_file("manual_recording.rec", world.recording_start, 0, 0)
@@ -603,7 +609,7 @@ class KeyboardControl(object):
                             print("WARNING: You are currently in asynchronous mode and could "
                                   "experience some issues with the traffic simulation")
                         self._autopilot_enabled = not self._autopilot_enabled
-                        world.player.set_autopilot(self._autopilot_enabled)
+                        world.player.set_autopilot(self._autopilot_enabled, world.traffic_manager.get_port())
                         world.hud.notification(
                             'Autopilot %s' % ('On' if self._autopilot_enabled else 'Off'))
                     elif event.key == K_l and pygame.key.get_mods() & KMOD_CTRL:
@@ -1315,13 +1321,19 @@ def game_loop(args):
     pygame.font.init()
     world = None
     original_settings = None
+    dashboard = None
 
     try:
+        # Opened first so the browser is up, and has taken and given back the
+        # focus, by the time the drive window needs the keyboard.
+        if args.dashboard:
+            dashboard = Dashboard(args.dashboard_port).start(args.dashboard_monitor)
+
         client = carla.Client(args.host, args.port)
         client.set_timeout(2000.0)
 
         sim_world = client.get_world()
-        traffic_manager = client.get_trafficmanager()
+        traffic_manager = client.get_trafficmanager(args.tm_port)
         if args.sync:
             original_settings = sim_world.get_settings()
             settings = sim_world.get_settings()
@@ -1352,6 +1364,7 @@ def game_loop(args):
             sim_world.wait_for_tick()
 
         clock = pygame.time.Clock()
+        refocus = dashboard is not None
         while True:
             if args.sync:
                 sim_world.tick()
@@ -1361,8 +1374,17 @@ def game_loop(args):
             world.tick(clock)
             world.render(display)
             pygame.display.flip()
+            if dashboard is not None:
+                v = world.player.get_velocity()
+                dashboard.update(speed=int(round(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))))
+                if refocus and dashboard.connected.is_set():
+                    focus_window(pygame.display.get_wm_info().get('window'))
+                    refocus = False
 
     finally:
+
+        if dashboard is not None:
+            dashboard.close()
 
         if original_settings:
             sim_world.apply_settings(original_settings)
@@ -1413,6 +1435,18 @@ def main():
     argparser.add_argument(
         '--sync', action='store_true',
         help='Activate synchronous mode execution')
+    argparser.add_argument(
+        '--tm-port', metavar='P', default=8000, type=int,
+        help='port of the Traffic Manager (default: 8000)')
+    argparser.add_argument(
+        '--no-dashboard', action='store_false', dest='dashboard',
+        help='do not open the dashboard window')
+    argparser.add_argument(
+        '--dashboard-monitor', metavar='N', default=None, type=int,
+        help='monitor to show the dashboard on, 0 = primary (default: the second monitor)')
+    argparser.add_argument(
+        '--dashboard-port', metavar='P', default=0, type=int,
+        help='HTTP port of the dashboard page (default: any free port)')
     args = argparser.parse_args()
 
     args.width, args.height = [int(x) for x in args.res.split('x')]

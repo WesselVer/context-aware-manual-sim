@@ -17,6 +17,11 @@ random-car behaviour.
 A second window opens with the smart-manual dashboard (smart_manual_dashboard/),
 full screen on the second monitor, showing the car's speed. --no-dashboard
 turns it off.
+
+A Logitech G25 wheel, when plugged in, drives the car (steering, throttle,
+brake, clutch) with force feedback (steering_wheel.py); the keyboard keeps
+working beside it. --wheel picks another wheel by name, --no-wheel ignores it.
+CARLA has no clutch, so pressing it disengages the throttle.
 """
 
 """
@@ -133,6 +138,7 @@ except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
 
 from smart_manual_dashboard import Dashboard, focus_window
+from steering_wheel import SteeringWheel
 
 OBJECT_TO_COLOR = [
     (255, 255, 255),
@@ -447,8 +453,9 @@ class World(object):
 
 class KeyboardControl(object):
     """Class that handles keyboard input."""
-    def __init__(self, world, start_in_autopilot):
+    def __init__(self, world, start_in_autopilot, wheel=None):
         self._autopilot_enabled = start_in_autopilot
+        self._wheel = wheel
         self._ackermann_enabled = False
         self._ackermann_reverse = 1
         if isinstance(world.player, carla.Vehicle):
@@ -643,6 +650,8 @@ class KeyboardControl(object):
         if not self._autopilot_enabled:
             if isinstance(self._control, carla.VehicleControl):
                 self._parse_vehicle_keys(pygame.key.get_pressed(), clock.get_time())
+                if self._wheel is not None and not self._ackermann_enabled:
+                    self._parse_wheel(world.player)
                 self._control.reverse = self._control.gear < 0
                 # Set automatic control-related vehicle lights
                 if self._control.brake:
@@ -710,6 +719,19 @@ class KeyboardControl(object):
             self._control.hand_brake = keys[K_SPACE]
         else:
             self._ackermann_control.steer = round(self._steer_cache, 1)
+
+    def _parse_wheel(self, vehicle):
+        """Wheel and pedals on top of the keys: steering keys win, pedals add."""
+        steer, throttle, brake, clutch = self._wheel.read(vehicle)
+        if self._steer_cache == 0.0:
+            self._control.steer = steer
+        # No clutch in CARLA: pressing it takes the engine off the wheels.
+        self._control.throttle = max(self._control.throttle, throttle) * (1.0 - clutch)
+        self._control.brake = max(self._control.brake, brake)
+
+    @property
+    def autopilot_enabled(self):
+        return self._autopilot_enabled
 
     def _parse_walker_keys(self, keys, milliseconds, world):
         self._control.speed = 0.0
@@ -1322,6 +1344,7 @@ def game_loop(args):
     world = None
     original_settings = None
     dashboard = None
+    wheel = None
 
     try:
         # Opened first so the browser is up, and has taken and given back the
@@ -1354,9 +1377,18 @@ def game_loop(args):
         display.fill((0,0,0))
         pygame.display.flip()
 
+        if args.wheel:
+            wheel = SteeringWheel.find(args.wheel, steer_ratio=args.steer_ratio,
+                                       ffb_gain=args.ffb_gain)
+            if wheel is None:
+                print('No steering wheel matching %r; keyboard only.' % args.wheel)
+            else:
+                print('Steering wheel: %s, force feedback %s' % (
+                    wheel.name, 'on' if wheel.has_ffb else 'off'))
+
         hud = HUD(args.width, args.height)
         world = World(sim_world, hud, traffic_manager, args)
-        controller = KeyboardControl(world, args.autopilot)
+        controller = KeyboardControl(world, args.autopilot, wheel)
 
         if args.sync:
             sim_world.tick()
@@ -1365,6 +1397,7 @@ def game_loop(args):
 
         clock = pygame.time.Clock()
         refocus = dashboard is not None
+        last_collision = None
         while True:
             if args.sync:
                 sim_world.tick()
@@ -1374,14 +1407,26 @@ def game_loop(args):
             world.tick(clock)
             world.render(display)
             pygame.display.flip()
+            v = world.player.get_velocity()
+            speed = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
+            if wheel is not None:
+                history = world.collision_sensor.history
+                collision = history[-1] if history else None
+                if collision is not None and collision is not last_collision:
+                    wheel.kick(collision[1])
+                last_collision = collision
+                wheel.update_ffb(world.player, world.imu_sensor,
+                                 controller.autopilot_enabled, clock.get_time() / 1000.0)
             if dashboard is not None:
-                v = world.player.get_velocity()
-                dashboard.update(speed=int(round(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))))
+                dashboard.update(speed=int(round(speed)))
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))
                     refocus = False
 
     finally:
+
+        if wheel is not None:
+            wheel.close()
 
         if dashboard is not None:
             dashboard.close()
@@ -1447,6 +1492,18 @@ def main():
     argparser.add_argument(
         '--dashboard-port', metavar='P', default=0, type=int,
         help='HTTP port of the dashboard page (default: any free port)')
+    argparser.add_argument(
+        '--wheel', metavar='NAME', default='G25',
+        help='steering wheel to use, part of its name (default: G25)')
+    argparser.add_argument(
+        '--no-wheel', action='store_const', const=None, dest='wheel',
+        help='ignore any steering wheel')
+    argparser.add_argument(
+        '--steer-ratio', metavar='R', default=15.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 15)')
+    argparser.add_argument(
+        '--ffb-gain', metavar='G', default=1.0, type=float,
+        help='force-feedback strength, 1 = full (default: 1)')
     args = argparser.parse_args()
 
     args.width, args.height = [int(x) for x in args.res.split('x')]

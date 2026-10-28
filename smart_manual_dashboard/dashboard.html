@@ -10,8 +10,9 @@
   The page renders whatever state the driver script streams from /events
   (server-sent events, one JSON object per message). Keys missing from a
   message keep their value from DEFAULTS below, so the script only has to
-  send what it measures. Today that is the speed; the other panels follow
-  the same props as the design and are ready to be fed.
+  send what it measures. Today that is the speed, gear, drive mode, regen
+  level, throttle and brake; the assist and tip panels follow the same props
+  as the design and are ready to be fed.
 -->
 <style>
 @font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
@@ -48,7 +49,7 @@ var DEFAULTS = {
   brake: 0,               // %
   gear: 'D',              // P | R | N | D
   driveMode: 'Normal',    // Eco | Normal | Sport
-  regenLevel: 2,          // 0..3
+  regenLevel: 1,          // 0..3: Off | Low | Medium | Maximum
   showTip: false,
   tip: null,              // {title, body, why, key, input}; null uses the level's sample tip
   accent: '#4DA3FF'
@@ -115,7 +116,7 @@ function render(p) {
   var gapSeconds = ['1.0 s', '1.5 s', '2.0 s', '2.5 s'][gap - 1];
   var markerSpeed = assist === 'Autopilot' ? p.apTarget : setSpeed;
   var showMarker = assist !== 'None';
-  var regenNames = ['Off', 'Low', 'Medium', 'High'];
+  var regenNames = ['Off', 'Low', 'Medium', 'Maximum'];
   var tip = p.tip || SAMPLE_TIPS[level] || SAMPLE_TIPS.Experienced;
 
   var pedalStatus;

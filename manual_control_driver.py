@@ -9,7 +9,8 @@
 """Allows controlling a vehicle with a keyboard, seen from the driver's seat.
 
 manual_control.py from the CARLA 0.10.0 release, changed to start in a
-driver's-eye camera. Backspace cycles the cars in DRIVER_EYES (Lincoln MKZ,
+driver's-eye camera, full screen on the primary monitor (--windowed for a
+window of --res). Backspace cycles the cars in DRIVER_EYES (Lincoln MKZ,
 Dodge Charger, Nissan Patrol, Ford taxi, Mini Cooper), each with a tuned eye
 position; Tab cycles the camera views. Pass --filter for the original
 random-car behaviour.
@@ -23,6 +24,13 @@ brake, clutch) with force feedback (steering_wheel.py); the keyboard keeps
 working beside it. --wheel picks another wheel by name, --no-wheel ignores it.
 CARLA has no clutch, so pressing it disengages the throttle. The H-shifter is
 an automatic's selector: 1st P, 3rd D, 4th R, anywhere else N.
+
+Drive modes Eco, Normal (the default) and Sport shape the throttle; the left
+paddle steps down, the right one up. Eco also makes the wheel's force
+feedback 40% lighter. Each mode sets the regenerative braking
+(Eco Maximum, Normal Low, Sport Off), which the wheel's top buttons then
+adjust: left down, right up. CARLA has no regen, so it is brake applied on
+lift-off. The dashboard shows the mode, regen, throttle and brake.
 """
 
 """
@@ -139,7 +147,8 @@ except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
 
 from smart_manual_dashboard import Dashboard, focus_window
-from steering_wheel import SteeringWheel
+from steering_wheel import (SteeringWheel, PADDLE_LEFT, PADDLE_RIGHT,
+                            WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT)
 
 OBJECT_TO_COLOR = [
     (255, 255, 255),
@@ -224,6 +233,24 @@ DRIVER_EYES = [
     ('vehicle.taxi.ford', carla.Location(x=0.00, y=-0.40, z=1.08)),
     ('vehicle.mini.cooper', carla.Location(x=-0.35, y=-0.45, z=1.30)),
 ]
+
+
+# Drive modes the paddles step through: the throttle response, the regen
+# level the mode starts with, and the force-feedback strength. Eco caps the
+# throttle at 60% with a soft start and lightens the wheel by 40%, so the
+# switch is felt; Sport answers early in the pedal's travel.
+DriveMode = collections.namedtuple('DriveMode', 'name throttle regen ffb')
+DRIVE_MODES = [
+    DriveMode('Eco', lambda pedal: 0.6 * pedal ** 1.6, 3, 0.6),
+    DriveMode('Normal', lambda pedal: pedal, 1, 1.0),
+    DriveMode('Sport', lambda pedal: pedal ** 0.7, 0, 1.0),
+]
+DEFAULT_DRIVE_MODE = 1
+
+# Regenerative braking, which CARLA lacks, as brake applied when the
+# throttle is released: Off, Low, Medium, Maximum (about 0.5 g).
+REGEN_BRAKE = [0.0, 0.12, 0.25, 0.5]
+REGEN_NAMES = ['Off', 'Low', 'Medium', 'Maximum']
 
 
 def driver_eye(vehicle):
@@ -457,6 +484,14 @@ class KeyboardControl(object):
     def __init__(self, world, start_in_autopilot, wheel=None):
         self._autopilot_enabled = start_in_autopilot
         self._wheel = wheel
+        # --ffb-gain, which each drive mode scales.
+        self._ffb_gain = wheel.ffb_gain if wheel is not None else 1.0
+        self._drive_mode = DEFAULT_DRIVE_MODE
+        self._regen = DRIVE_MODES[self._drive_mode].regen
+        self._key_throttle = 0.0
+        self._clutch = 0.0
+        # The throttle asked for, before the drive mode shapes it.
+        self.pedal = 0.0
         self._ackermann_enabled = False
         self._ackermann_reverse = 1
         if isinstance(world.player, carla.Vehicle):
@@ -652,7 +687,9 @@ class KeyboardControl(object):
             if isinstance(self._control, carla.VehicleControl):
                 self._parse_vehicle_keys(pygame.key.get_pressed(), clock.get_time())
                 if self._wheel is not None and not self._ackermann_enabled:
-                    self._parse_wheel(world.player)
+                    self._parse_wheel(world)
+                if not self._ackermann_enabled:
+                    self._apply_drive_mode(world.player)
                 self._control.reverse = self._control.gear < 0
                 # Set automatic control-related vehicle lights
                 if self._control.brake:
@@ -684,11 +721,14 @@ class KeyboardControl(object):
     def _parse_vehicle_keys(self, keys, milliseconds):
         if keys[K_UP] or keys[K_w]:
             if not self._ackermann_enabled:
-                self._control.throttle = min(self._control.throttle + 0.1, 1.00)
+                # Kept apart, so the drive mode's shaping does not feed back.
+                self._key_throttle = min(self._key_throttle + 0.1, 1.00)
+                self._control.throttle = self._key_throttle
             else:
                 self._ackermann_control.speed += round(milliseconds * 0.005, 2) * self._ackermann_reverse
         else:
             if not self._ackermann_enabled:
+                self._key_throttle = 0.0
                 self._control.throttle = 0.0
 
         if keys[K_DOWN] or keys[K_s]:
@@ -721,12 +761,26 @@ class KeyboardControl(object):
         else:
             self._ackermann_control.steer = round(self._steer_cache, 1)
 
-    def _parse_wheel(self, vehicle):
+    def _parse_wheel(self, world):
         """Wheel and pedals on top of the keys: steering keys win, pedals add."""
-        steer, throttle, brake, clutch = self._wheel.read(vehicle)
+        for button in self._wheel.pressed():
+            if button in (PADDLE_LEFT, PADDLE_RIGHT):
+                step = 1 if button == PADDLE_RIGHT else -1
+                mode = max(0, min(len(DRIVE_MODES) - 1, self._drive_mode + step))
+                if mode != self._drive_mode:
+                    self._drive_mode = mode
+                    self._regen = DRIVE_MODES[mode].regen
+                    self._wheel.ffb_gain = self._ffb_gain * DRIVE_MODES[mode].ffb
+                    world.hud.notification('%s mode' % DRIVE_MODES[mode].name)
+            elif button in (WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT):
+                step = 1 if button == WHEEL_BUTTON_RIGHT else -1
+                self._regen = max(0, min(len(REGEN_BRAKE) - 1, self._regen + step))
+                world.hud.notification('Regen %s' % REGEN_NAMES[self._regen])
+        steer, throttle, brake, clutch = self._wheel.read(world.player)
         if self._steer_cache == 0.0:
             self._control.steer = steer
         # No clutch in CARLA: pressing it takes the engine off the wheels.
+        self._clutch = clutch
         self._control.throttle = max(self._control.throttle, throttle) * (1.0 - clutch)
         self._control.brake = max(self._control.brake, brake)
         selected = self._wheel.gear()
@@ -739,6 +793,28 @@ class KeyboardControl(object):
         if selected == 'P':
             self._control.throttle = 0.0
             self._control.hand_brake = True
+
+    def _apply_drive_mode(self, vehicle):
+        """Shapes the throttle for the drive mode, and brakes for regen on lift-off."""
+        self.pedal = self._control.throttle
+        self._control.throttle = DRIVE_MODES[self._drive_mode].throttle(self.pedal)
+        neutral = self._control.manual_gear_shift and self._control.gear == 0
+        if self.pedal > 0.02 or neutral or self._clutch > 0.5 or self._control.hand_brake:
+            return
+        v = vehicle.get_velocity()
+        kmh = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
+        # Eases off below 13 km/h, so the car rolls to a stop rather than lurching.
+        regen = REGEN_BRAKE[self._regen] * min(1.0, max(0.0, (kmh - 3.0) / 10.0))
+        self._control.brake = max(self._control.brake, regen)
+
+    def dashboard_state(self):
+        """The drivetrain values the dashboard shows."""
+        return dict(gear=self.selected_gear,
+                    driveMode=DRIVE_MODES[self._drive_mode].name,
+                    regenLevel=self._regen,
+                    driverPedal=int(round(100 * self.pedal)),
+                    appliedThrottle=int(round(100 * self._control.throttle)),
+                    brake=int(round(100 * self._control.brake)))
 
     @property
     def selected_gear(self):
@@ -1393,9 +1469,15 @@ def game_loop(args):
             print("WARNING: You are currently in asynchronous mode and could "
                   "experience some issues with the traffic simulation")
 
-        display = pygame.display.set_mode(
-            (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF)
+        flags = pygame.HWSURFACE | pygame.DOUBLEBUF
+        if not args.windowed:
+            # Borderless over the whole primary monitor rather than exclusive
+            # full screen, which would minimise itself whenever the dashboard
+            # on the other monitor is clicked.
+            os.environ['SDL_VIDEO_WINDOW_POS'] = '0,0'
+            args.width, args.height = pygame.display.get_desktop_sizes()[0]
+            flags |= pygame.NOFRAME
+        display = pygame.display.set_mode((args.width, args.height), flags)
         display.fill((0,0,0))
         pygame.display.flip()
 
@@ -1440,7 +1522,7 @@ def game_loop(args):
                 wheel.update_ffb(world.player, world.imu_sensor,
                                  controller.autopilot_enabled, clock.get_time() / 1000.0)
             if dashboard is not None:
-                dashboard.update(speed=int(round(speed)), gear=controller.selected_gear)
+                dashboard.update(speed=int(round(speed)), **controller.dashboard_state())
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))
                     refocus = False
@@ -1486,7 +1568,10 @@ def main():
         help='enable autopilot')
     argparser.add_argument(
         '--res', metavar='WIDTHxHEIGHT', default='1280x720',
-        help='window resolution (default: 1280x720)')
+        help='window resolution with --windowed (default: 1280x720)')
+    argparser.add_argument(
+        '--windowed', action='store_true',
+        help='a window instead of full screen on the primary monitor')
     argparser.add_argument(
         '--filter', metavar='PATTERN', default=None,
         help='actor filter; random car per Backspace (default: cycle the DRIVER_EYES cars)')

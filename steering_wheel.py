@@ -56,6 +56,12 @@ CLUTCH_AXIS = 4
 SHIFTER_GEARS = {8: 'P', 10: 'D', 11: 'R'}
 SHIFTER_BUTTONS = range(8, 15)
 
+# Paddles and the wheel's top buttons, as measured on the G25.
+PADDLE_LEFT = 5
+PADDLE_RIGHT = 4
+WHEEL_BUTTON_LEFT = 7
+WHEEL_BUTTON_RIGHT = 6
+
 # Pedals travel too little near the ends to reach the extremes reliably.
 PEDAL_DEADZONE = 0.03
 
@@ -282,6 +288,7 @@ class SteeringWheel(object):
         self._moved = set()
         # The shifter is optional; it takes over the gear once it is used.
         self._shifter_used = False
+        self._buttons_down = set()
         self._car = None
         # Filters for the road effects.
         self._accel_z_mean = None
@@ -373,6 +380,14 @@ class SteeringWheel(object):
                 self._shifter_used = True
                 return SHIFTER_GEARS.get(button, 'N')
         return 'N' if self._shifter_used else None
+
+    def pressed(self):
+        """Buttons pressed since the last call; call it once a frame."""
+        down = set(b for b in range(self.joystick.get_numbuttons())
+                   if self.joystick.get_button(b))
+        new = down - self._buttons_down
+        self._buttons_down = down
+        return new
 
     def kick(self, impulse):
         """A jolt for a collision of this normal impulse (N s)."""

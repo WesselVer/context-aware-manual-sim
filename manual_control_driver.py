@@ -21,7 +21,8 @@ turns it off.
 A Logitech G25 wheel, when plugged in, drives the car (steering, throttle,
 brake, clutch) with force feedback (steering_wheel.py); the keyboard keeps
 working beside it. --wheel picks another wheel by name, --no-wheel ignores it.
-CARLA has no clutch, so pressing it disengages the throttle.
+CARLA has no clutch, so pressing it disengages the throttle. The H-shifter is
+an automatic's selector: 1st P, 3rd D, 4th R, anywhere else N.
 """
 
 """
@@ -728,6 +729,27 @@ class KeyboardControl(object):
         # No clutch in CARLA: pressing it takes the engine off the wheels.
         self._control.throttle = max(self._control.throttle, throttle) * (1.0 - clutch)
         self._control.brake = max(self._control.brake, brake)
+        selected = self._wheel.gear()
+        if selected is None:
+            return
+        # D and R drive CARLA's automatic gearbox; N is the manual gearbox's
+        # neutral; P, which CARLA lacks, is neutral with the hand brake on.
+        self._control.manual_gear_shift = selected in ('P', 'N')
+        self._control.gear = {'D': 1, 'R': -1}.get(selected, 0)
+        if selected == 'P':
+            self._control.throttle = 0.0
+            self._control.hand_brake = True
+
+    @property
+    def selected_gear(self):
+        """'P', 'R', 'N' or 'D' as the dashboard shows it."""
+        if self._wheel is not None and self._wheel.gear() is not None:
+            return self._wheel.gear()
+        if self._control.reverse:
+            return 'R'
+        if self._control.manual_gear_shift and self._control.gear == 0:
+            return 'N'
+        return 'D'
 
     @property
     def autopilot_enabled(self):
@@ -1418,7 +1440,7 @@ def game_loop(args):
                 wheel.update_ffb(world.player, world.imu_sensor,
                                  controller.autopilot_enabled, clock.get_time() / 1000.0)
             if dashboard is not None:
-                dashboard.update(speed=int(round(speed)))
+                dashboard.update(speed=int(round(speed)), gear=controller.selected_gear)
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))
                     refocus = False
@@ -1499,8 +1521,8 @@ def main():
         '--no-wheel', action='store_const', const=None, dest='wheel',
         help='ignore any steering wheel')
     argparser.add_argument(
-        '--steer-ratio', metavar='R', default=15.0, type=float,
-        help='degrees of wheel per degree of front-wheel angle (default: 15)')
+        '--steer-ratio', metavar='R', default=10.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 10)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')

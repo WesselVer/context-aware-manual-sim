@@ -4,9 +4,10 @@ Reads steering, throttle, brake and clutch from the wheel through pygame and
 drives its force feedback through SDL's haptic API, called with ctypes on the
 SDL2 library pygame itself loaded (pygame does not expose haptics).
 
-Steering goes through a real car's steering ratio (STEER_RATIO, 15:1 by
-default): the 900-degree wheel turns the front wheels about 30 degrees each
-way, instead of CARLA's full 70 at a quarter turn.
+Steering goes through a steering ratio (STEER_RATIO, 10:1 by default): the
+900-degree wheel turns the front wheels 45 degrees each way, instead of
+CARLA's full 70 at a quarter turn. Real sedans are about 15:1, which feels
+sluggish without a car's motion around you.
 
 The force feedback is built like a real car's:
 
@@ -23,6 +24,9 @@ The force feedback is built like a real car's:
 Needs the Logitech driver (G HUB or Logitech Gaming Software) so the G25 runs
 in native mode: 900 degrees, separate clutch axis, force feedback. In G HUB
 keep the wheel at 900 degrees and the force-feedback strength at the top.
+
+The H-shifter works as an automatic's selector (SHIFTER_GEARS): 1st is P,
+3rd D, 4th R, and the middle or any other slot N.
 
 python steering_wheel.py prints the live inputs, to check the mapping.
 """
@@ -46,13 +50,20 @@ THROTTLE_AXIS = 1
 BRAKE_AXIS = 2
 CLUTCH_AXIS = 4
 
+# H-shifter slots as buttons (G25: gears 1-6 are 8-13, reverse 14), laid out
+# as an automatic's selector: 1st is P, 3rd D, 4th R. The stick in the
+# middle, or in any other slot, is N.
+SHIFTER_GEARS = {8: 'P', 10: 'D', 11: 'R'}
+SHIFTER_BUTTONS = range(8, 15)
+
 # Pedals travel too little near the ends to reach the extremes reliably.
 PEDAL_DEADZONE = 0.03
 
 # Lock-to-lock rotation of the wheel, as set in G HUB.
 WHEEL_RANGE = 900.0
-# Degrees of wheel per degree of front-wheel angle; a sedan is about 15.
-STEER_RATIO = 15.0
+# Degrees of wheel per degree of front-wheel angle; picked by driving it
+# (a real sedan is about 15).
+STEER_RATIO = 10.0
 
 # CARLA's default steering curve: the share of the steer that reaches the
 # wheels at a speed (km/h). It works like a variable ratio on top of ours.
@@ -269,6 +280,8 @@ class SteeringWheel(object):
         # Until a pedal first moves, SDL reports 0, which is half pressed;
         # treat each pedal as released until it has reported something else.
         self._moved = set()
+        # The shifter is optional; it takes over the gear once it is used.
+        self._shifter_used = False
         self._car = None
         # Filters for the road effects.
         self._accel_z_mean = None
@@ -351,6 +364,15 @@ class SteeringWheel(object):
                 self._pedal(THROTTLE_AXIS),
                 self._pedal(BRAKE_AXIS),
                 self._pedal(CLUTCH_AXIS))
+
+    def gear(self):
+        """'P', 'N', 'D' or 'R' from the shifter; None until it is first used."""
+        count = self.joystick.get_numbuttons()
+        for button in SHIFTER_BUTTONS:
+            if button < count and self.joystick.get_button(button):
+                self._shifter_used = True
+                return SHIFTER_GEARS.get(button, 'N')
+        return 'N' if self._shifter_used else None
 
     def kick(self, impulse):
         """A jolt for a collision of this normal impulse (N s)."""
@@ -462,9 +484,9 @@ if __name__ == '__main__':
     try:
         while not any(e.type == pygame.QUIT for e in pygame.event.get()):
             wheel.update_ffb()
-            now = tuple(round(v, 2) for v in wheel.read())
+            now = tuple(round(v, 2) for v in wheel.read()) + (wheel.gear() or '-',)
             if now != last:
-                print('steer %+.2f  throttle %.2f  brake %.2f  clutch %.2f' % now)
+                print('steer %+.2f  throttle %.2f  brake %.2f  clutch %.2f  gear %s' % now)
                 last = now
             clock.tick(30)
     except KeyboardInterrupt:

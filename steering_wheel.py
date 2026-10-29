@@ -62,6 +62,12 @@ PADDLE_RIGHT = 4
 WHEEL_BUTTON_LEFT = 7
 WHEEL_BUTTON_RIGHT = 6
 
+# Cruise-control buttons, as measured on the G25.
+CRUISE_ON_OFF = 15
+CRUISE_DOWN = 16
+CRUISE_RESUME = 17
+CRUISE_UP = 18
+
 # Pedals travel too little near the ends to reach the extremes reliably.
 PEDAL_DEADZONE = 0.03
 

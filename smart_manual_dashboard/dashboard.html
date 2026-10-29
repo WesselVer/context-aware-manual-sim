@@ -11,8 +11,13 @@
   (server-sent events, one JSON object per message). Keys missing from a
   message keep their value from DEFAULTS below, so the script only has to
   send what it measures. Today that is the speed, gear, drive mode, regen
-  level, throttle and brake; the assist and tip panels follow the same props
-  as the design and are ready to be fed.
+  level, throttle, brake and cruise control; the adaptive-cruise, autopilot
+  and tip panels follow the same props as the design and are ready to be fed.
+
+  A tip (showTip + tip) slides in with a chime, outlines the zones it names
+  in tip.highlight, and draws tip.gesture, the movement the driver makes.
+  Zones: speed, throttle, brake, gear, cruise, driveMode, regen.
+  Gestures: release-throttle.
 -->
 <style>
 @font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
@@ -24,11 +29,37 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0B0E13; cursor: none; }
 button { font: inherit; }
 #stage { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1080px; transform-origin: 0 0; }
+#frame { width: 1920px; height: 1080px; box-sizing: border-box; padding: 36px 48px; display: flex; flex-direction: column; gap: 24px; background: #0B0E13; color: #E8EAED; font-family: 'Barlow', system-ui, sans-serif; --accent: #4DA3FF; }
+#top, #tipslot { display: contents; }
+/* A zone a tip refers to. The page is redrawn every frame, so the pulse is
+   kept in step by a negative animation-delay from when the tip appeared. */
+.zone-on { position: relative; border-radius: 16px; outline: 3px solid var(--accent); outline-offset: 12px; animation: zonePulse 2.4s ease-in-out infinite; }
+@keyframes zonePulse {
+  0%, 100% { outline-color: var(--accent); box-shadow: 0 0 34px 14px rgba(77, 163, 255, 0.22); }
+  50% { outline-color: rgba(77, 163, 255, 0.45); box-shadow: 0 0 18px 6px rgba(77, 163, 255, 0.08); }
+}
+.zone-tag { position: absolute; top: -36px; left: -14px; padding: 2px 10px; border-radius: 6px; font: 700 13px 'Barlow', sans-serif; letter-spacing: 0.08em; background: var(--accent); color: #0B0E13; }
+/* The tip's arrival: slides up, its border flashes and settles. */
+.tip-in { animation: tipSlide 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), tipGlow 2.6s ease-out; }
+@keyframes tipSlide { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+@keyframes tipGlow {
+  0%, 25% { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(77, 163, 255, 0.35), 0 0 60px 10px rgba(77, 163, 255, 0.30); }
+  100% { border-color: #2B3A52; box-shadow: none; }
+}
+/* release-throttle: the foot lifts off the accelerator and the pedal springs up. */
+.g-loop { animation: gFade 3.4s ease-in-out infinite; }
+.g-foot { transform-box: view-box; transform-origin: 84px 168px; animation: gFoot 3.4s ease-in-out infinite; }
+.g-pedal { transform-box: view-box; transform-origin: 210px 168px; animation: gPedal 3.4s ease-in-out infinite; }
+.g-arrow { animation: gArrow 3.4s ease-in-out infinite; }
+@keyframes gFade { 0% { opacity: 0; } 8%, 86% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes gFoot { 0%, 22% { transform: rotate(0deg); } 52%, 100% { transform: rotate(-13deg); } }
+@keyframes gPedal { 0%, 22% { transform: rotate(-18deg); } 52%, 100% { transform: rotate(-36deg); } }
+@keyframes gArrow { 0%, 30% { opacity: 0; transform: translateY(10px); } 52%, 86% { opacity: 1; transform: none; } 100% { opacity: 0; } }
 #offline { position: absolute; right: 48px; bottom: 12px; font: 600 14px 'Barlow', sans-serif; letter-spacing: 0.06em; color: #F5A524; display: none; }
 </style>
 </head>
 <body>
-<div id="stage"></div>
+<div id="stage"><div id="frame"><div id="top"></div><div id="tipslot"></div></div></div>
 <div id="offline">NO DATA FROM CARLA</div>
 <script>
 'use strict';
@@ -40,7 +71,8 @@ var DEFAULTS = {
   activeAssist: 'None',   // None | Cruise | Cruise standby | ACC | Autopilot
   level: 'Experienced',   // Beginner | Experienced | Expert
   speed: null,            // km/h; null until the first reading
-  setSpeed: 100,
+  setSpeed: null,         // km/h; null when no speed is set
+  throttleOverride: null, // true while the pedal overrides an assist; null works it out from the bars
   accGap: 3,              // 1..4
   apTarget: 100,
   apDistance: 25,
@@ -93,12 +125,26 @@ function chip(text) {
   return '<span style="padding: 4px 10px; border-radius: 6px; border: 1px solid #3A4250; font-size: 14px; font-weight: 600; color: #C9D0D8">' + text + '</span>';
 }
 
+var tipShownAt = 0;
+
+// A zone the tip names gets the zone-on outline and a TIP tag. zoneAttr
+// opens the element's style attribute, so the caller adds its own style.
+function zoneOn(p, name) {
+  return p.showTip && p.tip && (p.tip.highlight || []).indexOf(name) >= 0;
+}
+function zoneAttr(p, name) {
+  return zoneOn(p, name) ? ' class="zone-on" style="animation-delay: -' + (Date.now() - tipShownAt) + 'ms; ' : ' style="';
+}
+function zoneTag(p, name) {
+  return zoneOn(p, name) ? '<span class="zone-tag">TIP</span>' : '';
+}
+
 function render(p) {
   var accent = p.accent;
   var assist = p.activeAssist;
   var level = p.level;
   var speed = p.speed;
-  var setSpeed = p.setSpeed;
+  var setSpeed = p.setSpeed === null ? '–' : p.setSpeed;
   var gap = Math.max(1, Math.min(4, p.accGap));
   var applied = p.appliedThrottle;
   var pedal = p.driverPedal;
@@ -115,21 +161,20 @@ function render(p) {
 
   var gapSeconds = ['1.0 s', '1.5 s', '2.0 s', '2.5 s'][gap - 1];
   var markerSpeed = assist === 'Autopilot' ? p.apTarget : setSpeed;
-  var showMarker = assist !== 'None';
+  var showMarker = assist !== 'None' && markerSpeed !== '–';
   var regenNames = ['Off', 'Low', 'Medium', 'Maximum'];
-  var tip = p.tip || SAMPLE_TIPS[level] || SAMPLE_TIPS.Experienced;
 
   var pedalStatus;
   if (assist === 'None' || assist === 'Cruise standby') {
     pedalStatus = { text: 'Manual control', bg: '#262D38', fg: '#C9D0D8' };
-  } else if (pedal > applied) {
+  } else if (p.throttleOverride === null ? pedal > applied : p.throttleOverride) {
     pedalStatus = { text: 'Driver override', bg: '#3A2E14', fg: '#F5A524' };
   } else {
     pedalStatus = { text: 'System controlled', bg: '#132238', fg: accent };
   }
 
-  function card(s, inner) {
-    return '<div style="flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + inner + '</div>';
+  function card(s, inner, zone) {
+    return '<div' + zoneAttr(p, zone) + 'flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, zone) + inner + '</div>';
   }
   function cardHead(title, s) {
     return '<div style="display: flex; align-items: center; justify-content: space-between">' +
@@ -139,7 +184,6 @@ function render(p) {
   }
 
   var h = '';
-  h += '<div style="width: 1920px; height: 1080px; box-sizing: border-box; padding: 36px 48px; display: flex; flex-direction: column; gap: 24px; background: #0B0E13; color: #E8EAED; font-family: \'Barlow\', system-ui, sans-serif">';
 
   // Header
   h += '<header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between">' +
@@ -166,7 +210,8 @@ function render(p) {
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(setSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h set speed</span></div>' +
-    '<div style="display: flex; gap: 8px">' + chip('SET') + chip('+ / −') + chip('CANCEL') + chip('RES') + '</div>');
+    '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('+5 / −5') + chip('RES') +
+    '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Brake cancels</span></div>', 'cruise');
 
   var bars = '';
   [4, 3, 2, 1].forEach(function (n) {
@@ -204,7 +249,7 @@ function render(p) {
 
   // Speed and gear
   h += '<section aria-label="Speed and gear" style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 32px 48px; border-radius: 20px; background: #10141A; border: 1px solid #1E242D; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px">' +
-    '<div style="display: flex; flex-direction: column; align-items: center">' +
+    '<div' + zoneAttr(p, 'speed') + 'display: flex; flex-direction: column; align-items: center">' + zoneTag(p, 'speed') +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 220px; font-weight: 600; line-height: 0.88; font-variant-numeric: tabular-nums">' + (speed === null ? '–' : esc(speed)) + '</span>' +
     '<div style="display: flex; align-items: center; gap: 16px; margin-top: 8px">' +
     '<span style="font-size: 26px; color: #9AA3AE">km/h</span>' +
@@ -219,7 +264,7 @@ function render(p) {
     '<div style="display: flex; justify-content: space-between; font-size: 14px; color: #7F8995">' +
     '<span>0</span><span>40</span><span>80</span><span>120</span><span>160</span></div></div>';
 
-  h += '<div role="img" aria-label="Gear selector" style="display: flex; gap: 12px">';
+  h += '<div role="img" aria-label="Gear selector"' + zoneAttr(p, 'gear') + 'display: flex; gap: 12px">' + zoneTag(p, 'gear');
   ['P', 'R', 'N', 'D'].forEach(function (g) {
     var on = g === p.gear;
     h += '<span style="width: 88px; height: 76px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 46px; font-weight: 700; border: 2px solid ' + (on ? '#E8EAED' : '#262D38') + '; background: ' + (on ? '#E8EAED' : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#7F8995') + '">' + g + '</span>';
@@ -227,14 +272,14 @@ function render(p) {
   h += '</div>';
 
   h += '<div style="width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 12px">' +
-    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<div' + zoneAttr(p, 'throttle') + 'display: flex; align-items: center; gap: 14px">' + zoneTag(p, 'throttle') +
     '<span style="width: 90px; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">THROTTLE</span>' +
     '<div style="flex-grow: 1; position: relative; height: 14px; border-radius: 7px; background: #262D38">' +
     '<div style="height: 14px; border-radius: 7px; background: ' + accent + '; width: ' + pct(applied) + '"></div>' +
     '<div style="position: absolute; top: -5px; width: 4px; height: 24px; border-radius: 2px; transform: translateX(-50%); background: #E8EAED; left: ' + pct(pedal) + '"></div>' +
     '</div>' +
     '<span style="width: 56px; text-align: right; font-size: 18px; font-variant-numeric: tabular-nums">' + esc(applied) + '%</span></div>' +
-    '<div style="display: flex; align-items: center; gap: 14px">' +
+    '<div' + zoneAttr(p, 'brake') + 'display: flex; align-items: center; gap: 14px">' + zoneTag(p, 'brake') +
     '<span style="width: 90px; font-size: 16px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">BRAKE</span>' +
     '<div style="flex-grow: 1; height: 14px; border-radius: 7px; background: #262D38">' +
     '<div style="height: 14px; border-radius: 7px; background: #F5A524; width: ' + pct(brake) + '"></div></div>' +
@@ -248,7 +293,7 @@ function render(p) {
   // Drivetrain column
   h += '<section aria-label="Drivetrain" style="width: 560px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px">' +
     '<h2 style="margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">DRIVETRAIN</h2>' +
-    '<div style="flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' +
+    '<div' + zoneAttr(p, 'driveMode') + 'flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'driveMode') +
     '<span style="font-size: 24px; font-weight: 600">Drive mode</span>' +
     '<div style="display: flex; gap: 6px; padding: 6px; border-radius: 12px; background: #0B0E13">';
   ['Eco', 'Normal', 'Sport'].forEach(function (m) {
@@ -259,7 +304,7 @@ function render(p) {
     '<div style="display: flex; justify-content: space-between; font-size: 16px; color: #9AA3AE">' +
     '<span>‹ Left paddle</span><span>Right paddle ›</span></div></div>';
 
-  h += '<div style="flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' +
+  h += '<div' + zoneAttr(p, 'regen') + 'flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'regen') +
     '<div style="display: flex; align-items: baseline; justify-content: space-between">' +
     '<span style="font-size: 24px; font-weight: 600">Regenerative braking</span>' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 34px; font-weight: 600; color: ' + accent + '">' + regenNames[regen] + '</span>' +
@@ -275,45 +320,109 @@ function render(p) {
     '<span>How hard the car slows when you lift off</span><span>Wheel buttons ▲ ▼</span></div></div>';
   h += '</section></main>';
 
-  // Manual tip
-  if (p.showTip) {
-    h += '<section aria-label="Manual tip" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; background: #141920; border: 2px solid #2B3A52; display: flex; gap: 40px">' +
-      '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px">' +
-      '<div style="display: flex; align-items: center; gap: 12px">' +
-      '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: ' + accent + '">MANUAL TIP</span>' +
-      '<span style="font-size: 15px; color: #9AA3AE">for ' + esc(level) + ' drivers</span></div>' +
-      '<h3 style="margin: 0; font-size: 34px; font-weight: 600; line-height: 1.15">' + esc(tip.title) + '</h3>' +
-      '<p style="margin: 0; max-width: 980px; font-size: 22px; line-height: 1.4; color: #C9D0D8">' + esc(tip.body) + '</p>' +
-      '<span style="font-size: 17px; color: #9AA3AE">' + esc(tip.why) + '</span></div>' +
-      '<div style="width: 400px; flex-shrink: 0; display: flex; flex-direction: column; justify-content: space-between; padding-left: 40px; border-left: 1px solid #262D38">' +
-      '<div style="display: flex; flex-direction: column; gap: 10px">' +
-      '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">CONTROL</span>' +
-      '<div style="display: flex; align-items: center; gap: 16px">' +
-      '<span style="min-width: 96px; height: 64px; box-sizing: border-box; padding: 0 18px; display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 2px solid ' + accent + '; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 30px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>' +
-      '<span style="font-size: 18px; line-height: 1.3; color: #C9D0D8">On the G25:<br>' + esc(tip.input) + '</span>' +
-      '</div></div>' +
-      '<div style="display: flex; gap: 10px">' +
-      '<button type="button" style="height: 48px; padding: 0 20px; border-radius: 10px; border: 1px solid #3A4250; background: transparent; color: #E8EAED; font-size: 17px; font-weight: 600">Dismiss</button>' +
-      '<button type="button" style="height: 48px; padding: 0 20px; border-radius: 10px; border: 1px solid #3A4250; background: transparent; color: #E8EAED; font-size: 17px; font-weight: 600">Turn tips off</button>' +
-      '</div></div></section>';
-  } else {
-    h += '<section aria-label="Manual tips off" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; border: 2px dashed #262D38; display: flex; align-items: center; justify-content: center">' +
-      '<span style="font-size: 22px; color: #9AA3AE">Tips are off. The dashboard shows vehicle status only.</span></section>';
-  }
-
-  h += '</div>';
   return h;
 }
 
+// The movement a tip asks for, drawn on the tip panel. Each loops: the
+// starting position, the movement, a hold, then a fade back to the start.
+var GESTURES = {
+  'release-throttle':
+    '<svg width="260" height="130" viewBox="40 40 320 160" fill="none" aria-hidden="true">' +
+    '<defs><linearGradient id="g-shin" x1="0" y1="1" x2="0" y2="0"><stop offset="0.35" stop-color="#3A4250"></stop><stop offset="1" stop-color="#3A4250" stop-opacity="0"></stop></linearGradient>' +
+    '<linearGradient id="g-shin-edge" x1="0" y1="1" x2="0" y2="0"><stop offset="0.35" stop-color="#E8EAED"></stop><stop offset="1" stop-color="#E8EAED" stop-opacity="0"></stop></linearGradient></defs>' +
+    '<line x1="44" y1="170" x2="356" y2="170" stroke="#3A4250" stroke-width="3" stroke-linecap="round"></line>' +
+    '<text x="210" y="192" text-anchor="middle" font-family="Barlow, sans-serif" font-size="16" font-weight="700" letter-spacing="1.5" fill="#7F8995">ACCELERATOR</text>' +
+    '<g class="g-loop">' +
+    '<g class="g-pedal"><rect x="210" y="161" width="92" height="14" rx="6" fill="var(--accent)"></rect></g>' +
+    '<circle cx="210" cy="168" r="7" fill="#7F8995"></circle>' +
+    '<g class="g-foot" stroke-width="3" stroke-linejoin="round">' +
+    '<path d="M112 104 L148 96 L122 30 L80 30 Z" fill="url(#g-shin)" stroke="url(#g-shin-edge)"></path>' +
+    '<path d="M80 170 L268 147 Q284 144 278 128 L146 96 Q124 90 112 102 L78 136 Q68 158 80 170 Z" fill="#3A4250" stroke="#E8EAED"></path>' +
+    '</g>' +
+    '<path class="g-arrow" d="M330 124 L330 72 M314 88 L330 72 L346 88" stroke="var(--accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>' +
+    '</g></svg>'
+};
+
+// The tip panel, drawn only when the tip changes so its animations run on.
+function renderTip(p) {
+  var accent = p.accent;
+  if (!p.showTip) {
+    return '<section aria-label="Manual tip" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; border: 2px dashed #262D38; display: flex; align-items: center; justify-content: center">' +
+      '<span style="font-size: 22px; color: #9AA3AE">No tip right now. Tips appear here when they are useful.</span></section>';
+  }
+  var tip = p.tip || SAMPLE_TIPS[p.level] || SAMPLE_TIPS.Experienced;
+  var right;
+  if (tip.gesture && GESTURES[tip.gesture]) {
+    right = '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">WHAT TO DO</span>' +
+      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center">' + GESTURES[tip.gesture] + '</div>' +
+      '<span style="font-size: 19px; font-weight: 600; text-align: center; color: #E8EAED">' + esc(tip.action || '') + '</span>';
+  } else {
+    right = '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">CONTROL</span>' +
+      '<div style="display: flex; align-items: center; gap: 16px">' +
+      '<span style="min-width: 96px; height: 64px; box-sizing: border-box; padding: 0 18px; display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 2px solid ' + accent + '; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 30px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>' +
+      '<span style="font-size: 18px; line-height: 1.3; color: #C9D0D8">On the G25:<br>' + esc(tip.input) + '</span>' +
+      '</div>';
+  }
+  return '<section aria-label="Manual tip" class="tip-in" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; background: #141920; border: 2px solid #2B3A52; display: flex; gap: 40px">' +
+    '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px">' +
+    '<div style="display: flex; align-items: center; gap: 12px">' +
+    '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: ' + accent + '">MANUAL TIP</span>' +
+    '<span style="font-size: 15px; color: #9AA3AE">for ' + esc(p.level) + ' drivers</span></div>' +
+    '<h3 style="margin: 0; font-size: 34px; font-weight: 600; line-height: 1.15">' + esc(tip.title) + '</h3>' +
+    '<p style="margin: 0; max-width: 980px; font-size: 22px; line-height: 1.4; color: #C9D0D8">' + esc(tip.body) + '</p>' +
+    '<span style="font-size: 17px; color: #9AA3AE">' + esc(tip.why) + '</span></div>' +
+    '<div style="width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding-left: 40px; border-left: 1px solid #262D38">' +
+    right + '</div></section>';
+}
+
+// A soft two-note chime as a tip appears, made with Web Audio so there is
+// no sound file. The browser is started with autoplay allowed.
+var audio = null;
+function chime() {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === 'suspended') audio.resume();
+    var t = audio.currentTime + 0.03;
+    [[659.25, 0], [987.77, 0.16]].forEach(function (note) {
+      var osc = audio.createOscillator();
+      var gain = audio.createGain();
+      var start = t + note[1];
+      osc.type = 'sine';
+      osc.frequency.value = note[0];
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.3);
+      osc.connect(gain);
+      gain.connect(audio.destination);
+      osc.start(start);
+      osc.stop(start + 1.4);
+    });
+  } catch (e) { /* no audio: the tip still shows */ }
+}
+
 var stage = document.getElementById('stage');
+var frame = document.getElementById('frame');
+var topEl = document.getElementById('top');
+var tipSlot = document.getElementById('tipslot');
 var offline = document.getElementById('offline');
 var state = Object.assign({}, DEFAULTS);
 var shown = '';
+var shownTip = null;
 
 function draw() {
+  frame.style.setProperty('--accent', state.accent);
+  var tipKey = state.showTip ? JSON.stringify([state.tip, state.level]) : '';
+  if (tipKey !== shownTip) {
+    if (tipKey) {
+      tipShownAt = Date.now();
+      chime();
+    }
+    tipSlot.innerHTML = renderTip(state);
+    shownTip = tipKey;
+  }
   var html = render(state);
   if (html !== shown) {
-    stage.innerHTML = html;
+    topEl.innerHTML = html;
     shown = html;
   }
 }

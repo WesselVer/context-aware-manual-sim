@@ -31,6 +31,12 @@ feedback 40% lighter. Each mode sets the regenerative braking
 (Eco Maximum, Normal Low, Sport Off), which the wheel's top buttons then
 adjust: left down, right up. CARLA has no regen, so it is brake applied on
 lift-off. The dashboard shows the mode, regen, throttle and brake.
+
+Cruise control, the plain kind that holds a speed with the throttle and never
+brakes, is on the wheel's cruise buttons: on/off switches it on at the current
+speed (20 km/h or more, in D), + and - change the set speed by 5 km/h, and
+resume returns to the last set speed. Braking, the clutch, the hand brake or
+leaving D cancels it; the throttle overrides it while pressed.
 """
 
 """
@@ -147,8 +153,10 @@ except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
 
 from smart_manual_dashboard import Dashboard, focus_window
+from smart_manual_dashboard.tips import Tips
 from steering_wheel import (SteeringWheel, PADDLE_LEFT, PADDLE_RIGHT,
-                            WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT)
+                            WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT,
+                            CRUISE_ON_OFF, CRUISE_DOWN, CRUISE_RESUME, CRUISE_UP)
 
 OBJECT_TO_COLOR = [
     (255, 255, 255),
@@ -251,6 +259,92 @@ DEFAULT_DRIVE_MODE = 1
 # throttle is released: Off, Low, Medium, Maximum (about 0.5 g).
 REGEN_BRAKE = [0.0, 0.12, 0.25, 0.5]
 REGEN_NAMES = ['Off', 'Low', 'Medium', 'Maximum']
+
+# Cruise control: the lowest speed it holds, the step of + and -, and the
+# PI gains from the speed error (km/h) to throttle.
+CRUISE_MIN_KMH = 20
+CRUISE_MAX_KMH = 180
+CRUISE_STEP_KMH = 5
+CRUISE_KP = 0.08
+CRUISE_KI = 0.03
+
+
+class CruiseControl(object):
+    """Holds a set speed with the throttle alone; it never brakes.
+
+    Off, or on: holding the speed (active) or waiting to (standby, after a
+    cancel). The set speed is kept through a cancel, for resume.
+    """
+
+    def __init__(self):
+        self.on = False
+        self.active = False
+        self.set_speed = None
+        self._integral = 0.0
+
+    def toggle(self, kmh, throttle):
+        if self.on:
+            self.on = self.active = False
+            self.set_speed = None
+            return 'Cruise off'
+        self.on = True
+        return self._engage(kmh, int(round(kmh)), throttle)
+
+    def change(self, step, kmh, throttle):
+        """+ or -: steps the set speed; on standby, sets the current speed."""
+        if not self.on:
+            return None
+        if not self.active:
+            return self._engage(kmh, int(round(kmh)), throttle)
+        # To the next multiple of the step, so 47 goes to 50 or 45.
+        if step > 0:
+            target = (self.set_speed // step + 1) * step
+        else:
+            target = -(-self.set_speed // -step) * -step + step
+        self.set_speed = max(CRUISE_MIN_KMH, min(CRUISE_MAX_KMH, target))
+        return 'Cruise %d km/h' % self.set_speed
+
+    def resume(self, kmh, throttle):
+        if not self.on or self.active:
+            return None
+        if self.set_speed is None:
+            return self._engage(kmh, int(round(kmh)), throttle)
+        return self._engage(kmh, self.set_speed, throttle)
+
+    def cancel(self):
+        if self.active:
+            self.active = False
+            return 'Cruise cancelled'
+        return None
+
+    def _engage(self, kmh, target, throttle):
+        if kmh < CRUISE_MIN_KMH:
+            self.active = False
+            return 'Cruise standby: needs %d km/h' % CRUISE_MIN_KMH
+        self.active = True
+        self.set_speed = max(CRUISE_MIN_KMH, min(CRUISE_MAX_KMH, target))
+        # Starts from the throttle in use, so engaging does not lurch.
+        self._integral = throttle
+        return 'Cruise %d km/h' % self.set_speed
+
+    def throttle(self, kmh, dt, hold=False):
+        """The throttle for this frame; hold keeps the integral (driver override)."""
+        error = self.set_speed - kmh
+        if not hold:
+            self._integral = max(0.0, min(1.0, self._integral + CRUISE_KI * error * dt))
+        return max(0.0, min(1.0, self._integral + CRUISE_KP * error))
+
+    @property
+    def state(self):
+        """The dashboard's activeAssist: Cruise, Cruise standby or None."""
+        if self.active:
+            return 'Cruise'
+        return 'Cruise standby' if self.on else 'None'
+
+
+def _speed_kmh(vehicle):
+    v = vehicle.get_velocity()
+    return 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
 
 
 def driver_eye(vehicle):
@@ -490,6 +584,10 @@ class KeyboardControl(object):
         self._regen = DRIVE_MODES[self._drive_mode].regen
         self._key_throttle = 0.0
         self._clutch = 0.0
+        self._cruise = CruiseControl()
+        self._cruise_override = False
+        self._applied_throttle = 0.0
+        self._cruise_throttle = 0.0
         # The throttle asked for, before the drive mode shapes it.
         self.pedal = 0.0
         self._ackermann_enabled = False
@@ -652,6 +750,7 @@ class KeyboardControl(object):
                             print("WARNING: You are currently in asynchronous mode and could "
                                   "experience some issues with the traffic simulation")
                         self._autopilot_enabled = not self._autopilot_enabled
+                        self._cruise.cancel()
                         world.player.set_autopilot(self._autopilot_enabled, world.traffic_manager.get_port())
                         world.hud.notification(
                             'Autopilot %s' % ('On' if self._autopilot_enabled else 'Off'))
@@ -689,7 +788,7 @@ class KeyboardControl(object):
                 if self._wheel is not None and not self._ackermann_enabled:
                     self._parse_wheel(world)
                 if not self._ackermann_enabled:
-                    self._apply_drive_mode(world.player)
+                    self._apply_drive_mode(world, clock.get_time() / 1000.0)
                 self._control.reverse = self._control.gear < 0
                 # Set automatic control-related vehicle lights
                 if self._control.brake:
@@ -776,6 +875,8 @@ class KeyboardControl(object):
                 step = 1 if button == WHEEL_BUTTON_RIGHT else -1
                 self._regen = max(0, min(len(REGEN_BRAKE) - 1, self._regen + step))
                 world.hud.notification('Regen %s' % REGEN_NAMES[self._regen])
+            elif button in (CRUISE_ON_OFF, CRUISE_DOWN, CRUISE_RESUME, CRUISE_UP):
+                self._cruise_button(button, world)
         steer, throttle, brake, clutch = self._wheel.read(world.player)
         if self._steer_cache == 0.0:
             self._control.steer = steer
@@ -794,15 +895,50 @@ class KeyboardControl(object):
             self._control.throttle = 0.0
             self._control.hand_brake = True
 
-    def _apply_drive_mode(self, vehicle):
-        """Shapes the throttle for the drive mode, and brakes for regen on lift-off."""
+    def _in_drive(self):
+        return not self._control.manual_gear_shift and self._control.gear >= 0
+
+    def _cruise_button(self, button, world):
+        kmh = _speed_kmh(world.player)
+        throttle = self._applied_throttle
+        on = self._cruise.on
+        if button != CRUISE_ON_OFF and not on:
+            return
+        if not self._in_drive() and (button != CRUISE_ON_OFF or not on):
+            world.hud.notification('Cruise needs D')
+            return
+        if button == CRUISE_ON_OFF:
+            message = self._cruise.toggle(kmh, throttle)
+        elif button == CRUISE_RESUME:
+            message = self._cruise.resume(kmh, throttle)
+        else:
+            step = CRUISE_STEP_KMH if button == CRUISE_UP else -CRUISE_STEP_KMH
+            message = self._cruise.change(step, kmh, throttle)
+        if message:
+            world.hud.notification(message)
+
+    def _apply_drive_mode(self, world, dt):
+        """Shapes the throttle for the drive mode, adds cruise control, and
+        brakes for regen on lift-off."""
         self.pedal = self._control.throttle
         self._control.throttle = DRIVE_MODES[self._drive_mode].throttle(self.pedal)
+        kmh = _speed_kmh(world.player)
+        self._cruise_override = False
+        if self._cruise.active:
+            # Braking, or taking the drive away, cancels it; the set speed stays for resume.
+            if (self._control.brake > 0.02 or self._clutch > 0.5 or
+                    self._control.hand_brake or not self._in_drive()):
+                world.hud.notification(self._cruise.cancel())
+            else:
+                hold = self._control.throttle > self._cruise_throttle
+                self._cruise_throttle = self._cruise.throttle(kmh, dt, hold)
+                self._cruise_override = self._control.throttle > self._cruise_throttle
+                self._control.throttle = max(self._control.throttle, self._cruise_throttle)
+        self._applied_throttle = self._control.throttle
         neutral = self._control.manual_gear_shift and self._control.gear == 0
-        if self.pedal > 0.02 or neutral or self._clutch > 0.5 or self._control.hand_brake:
+        if (self.pedal > 0.02 or neutral or self._clutch > 0.5 or
+                self._control.hand_brake or self._cruise.active):
             return
-        v = vehicle.get_velocity()
-        kmh = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
         # Eases off below 13 km/h, so the car rolls to a stop rather than lurching.
         regen = REGEN_BRAKE[self._regen] * min(1.0, max(0.0, (kmh - 3.0) / 10.0))
         self._control.brake = max(self._control.brake, regen)
@@ -814,7 +950,10 @@ class KeyboardControl(object):
                     regenLevel=self._regen,
                     driverPedal=int(round(100 * self.pedal)),
                     appliedThrottle=int(round(100 * self._control.throttle)),
-                    brake=int(round(100 * self._control.brake)))
+                    brake=int(round(100 * self._control.brake)),
+                    activeAssist=self._cruise.state,
+                    setSpeed=self._cruise.set_speed,
+                    throttleOverride=self._cruise_override)
 
     @property
     def selected_gear(self):
@@ -1442,6 +1581,7 @@ def game_loop(args):
     world = None
     original_settings = None
     dashboard = None
+    tips = Tips()
     wheel = None
 
     try:
@@ -1522,7 +1662,9 @@ def game_loop(args):
                 wheel.update_ffb(world.player, world.imu_sensor,
                                  controller.autopilot_enabled, clock.get_time() / 1000.0)
             if dashboard is not None:
-                dashboard.update(speed=int(round(speed)), **controller.dashboard_state())
+                state = controller.dashboard_state()
+                state.update(tips.update(speed))
+                dashboard.update(speed=int(round(speed)), **state)
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))
                     refocus = False

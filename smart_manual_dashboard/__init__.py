@@ -206,7 +206,9 @@ class Dashboard(object):
             time.sleep(0.5)
         args = [browser, '--app=' + self.url, '--user-data-dir=' + self._profile,
                 '--no-first-run', '--no-default-browser-check',
-                '--disable-features=Translate']
+                '--disable-features=Translate',
+                # The tip chime plays without a click on the page.
+                '--autoplay-policy=no-user-gesture-required']
         if monitor is not None:
             left, top, _, _ = monitors[monitor]
             args += ['--window-position=%d,%d' % (left + 100, top + 100),
@@ -296,6 +298,7 @@ def focus_window(hwnd):
 def _demo():
     import argparse
     import math
+    from smart_manual_dashboard.tips import Tips
     argparser = argparse.ArgumentParser(description='Smart manual dashboard demo (no CARLA)')
     argparser.add_argument('--port', default=0, type=int, help='HTTP port (default: any free port)')
     argparser.add_argument('--monitor', default=None, type=int,
@@ -307,9 +310,11 @@ def _demo():
     print('Serving %s, Ctrl+C to stop' % dashboard.url)
     try:
         t0 = time.time()
+        tips = Tips()
         while True:
             t = time.time() - t0
-            dashboard.update(speed=int(round(65 + 60 * math.sin(t / 3.0))))
+            speed = 65 + 60 * math.sin(t / 3.0)
+            dashboard.update(speed=int(round(speed)), **tips.update(speed))
             time.sleep(1.0 / 60)
     except KeyboardInterrupt:
         pass

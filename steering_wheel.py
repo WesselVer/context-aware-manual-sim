@@ -62,11 +62,15 @@ PADDLE_RIGHT = 4
 WHEEL_BUTTON_LEFT = 7
 WHEEL_BUTTON_RIGHT = 6
 
-# Cruise-control buttons, as measured on the G25.
+# Cruise-control buttons, as measured on the G25. A long press of on/off
+# turns on adaptive cruise; gap - and + set its following distance.
 CRUISE_ON_OFF = 15
 CRUISE_DOWN = 16
 CRUISE_RESUME = 17
 CRUISE_UP = 18
+GAP_DOWN = 1
+GAP_UP = 2
+AUTOPILOT_BUTTON = 0
 
 # Pedals travel too little near the ends to reach the extremes reliably.
 PEDAL_DEADZONE = 0.03
@@ -370,6 +374,11 @@ class SteeringWheel(object):
         max_steer = self._geometry(vehicle).max_steer if vehicle is not None else 70.0
         return max_steer * self.steer_ratio / (WHEEL_RANGE / 2.0)
 
+    def deviation(self, vehicle, steer):
+        """Degrees the wheel is turned away from where CARLA steer would put it."""
+        target = steer * self._wheel_per_steer(vehicle)
+        return (self.joystick.get_axis(STEER_AXIS) - target) * WHEEL_RANGE / 2.0
+
     def read(self, vehicle=None):
         """(steer, throttle, brake, clutch): CARLA steer in [-1, 1], pedals in [0, 1]."""
         steer = self.joystick.get_axis(STEER_AXIS) / self._wheel_per_steer(vehicle)
@@ -394,6 +403,10 @@ class SteeringWheel(object):
         new = down - self._buttons_down
         self._buttons_down = down
         return new
+
+    def is_down(self, button):
+        """Whether the button is held now."""
+        return button < self.joystick.get_numbuttons() and bool(self.joystick.get_button(button))
 
     def kick(self, impulse):
         """A jolt for a collision of this normal impulse (N s)."""
@@ -429,7 +442,8 @@ class SteeringWheel(object):
 
         if autopilot:
             # The spring turns the wheel to the car's steering; stiff enough
-            # to turn it, loose enough to grab back.
+            # to turn it and to resist a hand at first, loose enough to grab
+            # back (the driver script hands over past a set angle).
             self._spring.set(0.8, steer * self._wheel_per_steer(vehicle))
             self._friction.set(0.0)
             self._damper.set(0.2)

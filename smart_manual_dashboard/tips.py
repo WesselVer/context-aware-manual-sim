@@ -2,7 +2,7 @@
 
 Each tip names the dashboard zones it refers to (highlight), which the page
 outlines, and the gesture the driver has to make, which the page draws:
-  zones     speed, throttle, brake, gear, cruise, driveMode, regen
+  zones     speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen
   gestures  release-throttle
 
 Tips.update() is called once a frame with what the car is doing and returns

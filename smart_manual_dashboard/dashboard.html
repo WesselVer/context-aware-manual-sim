@@ -14,9 +14,11 @@
   level, throttle, brake and cruise control; the adaptive-cruise, autopilot
   and tip panels follow the same props as the design and are ready to be fed.
 
+  ACC and autopilot coming on and going off each have their own chime.
+
   A tip (showTip + tip) slides in with a chime, outlines the zones it names
   in tip.highlight, and draws tip.gesture, the movement the driver makes.
-  Zones: speed, throttle, brake, gear, cruise, driveMode, regen.
+  Zones: speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen.
   Gestures: release-throttle.
 -->
 <style>
@@ -55,6 +57,13 @@ button { font: inherit; }
 @keyframes gFoot { 0%, 22% { transform: rotate(0deg); } 52%, 100% { transform: rotate(-13deg); } }
 @keyframes gPedal { 0%, 22% { transform: rotate(-18deg); } 52%, 100% { transform: rotate(-36deg); } }
 @keyframes gArrow { 0%, 30% { opacity: 0; transform: translateY(10px); } 52%, 86% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+/* Autopilot driving: its card breathes, so it is clear the car drives itself.
+   Kept in step across redraws like the tip zones, from when it came on. */
+.ap-live { animation: apPulse 2.2s ease-in-out infinite; }
+@keyframes apPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(77, 163, 255, 0); background: #132238; }
+  50% { box-shadow: 0 0 44px 10px rgba(77, 163, 255, 0.45), inset 0 0 30px rgba(77, 163, 255, 0.18); background: #183154; }
+}
 #offline { position: absolute; right: 48px; bottom: 12px; font: 600 14px 'Barlow', sans-serif; letter-spacing: 0.06em; color: #F5A524; display: none; }
 </style>
 </head>
@@ -68,14 +77,16 @@ button { font: inherit; }
 // and the tip panel hidden, so nothing on screen claims a state the car is
 // not in.
 var DEFAULTS = {
-  activeAssist: 'None',   // None | Cruise | Cruise standby | ACC | Autopilot
+  activeAssist: 'None',   // None | Cruise | Cruise standby | ACC | ACC standby | Autopilot
   level: 'Experienced',   // Beginner | Experienced | Expert
   speed: null,            // km/h; null until the first reading
   setSpeed: null,         // km/h; null when no speed is set
   throttleOverride: null, // true while the pedal overrides an assist; null works it out from the bars
-  accGap: 3,              // 1..4
-  apTarget: 100,
-  apDistance: 25,
+  accGap: 2,              // 1..4
+  accLead: null,          // m to the car ahead while ACC is on; null when there is none
+  accWaiting: false,      // ACC stopped behind a car, waiting for RES or the throttle
+  apTarget: 30,           // km/h
+  apDistance: 17,         // m
   appliedThrottle: 0,     // %
   driverPedal: 0,         // %
   brake: 0,               // %
@@ -126,6 +137,7 @@ function chip(text) {
 }
 
 var tipShownAt = 0;
+var autopilotSince = 0;
 
 // A zone the tip names gets the zone-on outline and a TIP tag. zoneAttr
 // opens the element's style attribute, so the caller adds its own style.
@@ -156,8 +168,12 @@ function render(p) {
   var off = { border: '#262D38', bg: '#141920', chipText: 'OFF', chipBg: '#262D38', chipFg: '#AEB6C0', value: '#7F8995' };
 
   var cc = assist === 'Cruise' ? active : (assist === 'Cruise standby' ? standby : off);
-  var acc = assist === 'ACC' ? active : off;
-  var ap = assist === 'Autopilot' ? active : off;
+  var acc = assist === 'ACC' ? active : (assist === 'ACC standby' ? standby : off);
+  // Plain and adaptive cruise share the set speed; only the one in use shows it.
+  var ccSpeed = assist.indexOf('Cruise') === 0 ? setSpeed : '–';
+  var accSpeed = assist.indexOf('ACC') === 0 ? setSpeed : '–';
+  var lead = assist.indexOf('ACC') === 0 ? p.accLead : null;
+  var ap = assist === 'Autopilot' ? Object.assign({}, active, { chipText: 'DRIVING' }) : off;
 
   var gapSeconds = ['1.0 s', '1.5 s', '2.0 s', '2.5 s'][gap - 1];
   var markerSpeed = assist === 'Autopilot' ? p.apTarget : setSpeed;
@@ -165,7 +181,7 @@ function render(p) {
   var regenNames = ['Off', 'Low', 'Medium', 'Maximum'];
 
   var pedalStatus;
-  if (assist === 'None' || assist === 'Cruise standby') {
+  if (assist === 'None' || assist === 'Cruise standby' || assist === 'ACC standby') {
     pedalStatus = { text: 'Manual control', bg: '#262D38', fg: '#C9D0D8' };
   } else if (p.throttleOverride === null ? pedal > applied : p.throttleOverride) {
     pedalStatus = { text: 'Driver override', bg: '#3A2E14', fg: '#F5A524' };
@@ -174,7 +190,11 @@ function render(p) {
   }
 
   function card(s, inner, zone) {
-    return '<div' + zoneAttr(p, zone) + 'flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, zone) + inner + '</div>';
+    var attr = zoneAttr(p, zone);
+    if (zone === 'autopilot' && assist === 'Autopilot' && !zoneOn(p, zone)) {
+      attr = ' class="ap-live" style="animation-delay: -' + (Date.now() - autopilotSince) + 'ms; ';
+    }
+    return '<div' + attr + 'flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, zone) + inner + '</div>';
   }
   function cardHead(title, s) {
     return '<div style="display: flex; align-items: center; justify-content: space-between">' +
@@ -208,7 +228,7 @@ function render(p) {
 
   h += card(cc, cardHead('Cruise control', cc) +
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(setSpeed) + '</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(ccSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h set speed</span></div>' +
     '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('+5 / −5') + chip('RES') +
     '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Brake cancels</span></div>', 'cruise');
@@ -218,20 +238,24 @@ function render(p) {
     var bg = n <= gap ? (assist === 'ACC' ? accent : '#7F8995') : '#262D38';
     bars += '<span style="display: block; height: 5px; border-radius: 3px; width: ' + (24 + (5 - n) * 14) + 'px; background: ' + bg + '"></span>';
   });
+  // The car ahead, drawn above the gap bars when ACC has one.
+  var leadCar = '<svg width="34" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? accent : 'transparent') + '" stroke-width="2.5" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
+  var leadText = p.accWaiting && assist === 'ACC' ? 'Stopped · press RES to go'
+    : (lead !== null ? 'Car ahead · ' + esc(lead) + ' m' : (assist.indexOf('ACC') === 0 ? 'No car ahead' : gapSeconds + ' time gap'));
   h += card(acc, cardHead('Adaptive cruise', acc) +
     '<div style="display: flex; align-items: center; gap: 28px">' +
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(setSpeed) + '</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(accSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h</span></div>' +
     '<div style="display: flex; align-items: center; gap: 14px">' +
-    '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + bars +
+    '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + leadCar + bars +
     '<svg width="40" height="26" viewBox="0 0 40 26" fill="none" stroke="#C9D0D8" stroke-width="2" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="10" x2="28" y2="10"></line></svg>' +
     '</div>' +
     '<div style="display: flex; flex-direction: column; gap: 2px">' +
-    '<span style="font-size: 22px; font-weight: 600; color: ' + acc.value + '">Gap ' + gap + '</span>' +
-    '<span style="font-size: 16px; color: #9AA3AE">' + gapSeconds + ' time gap</span>' +
+    '<span style="font-size: 22px; font-weight: 600; color: ' + acc.value + '">Gap ' + gap + ' · ' + gapSeconds + '</span>' +
+    '<span style="font-size: 16px; color: ' + (p.accWaiting && assist === 'ACC' ? '#F5A524' : '#9AA3AE') + '">' + leadText + '</span>' +
     '</div></div></div>' +
-    '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('GAP') + '</div>');
+    '<div style="display: flex; gap: 8px; align-items: center">' + chip('HOLD ON / OFF') + chip('GAP − / +') + chip('+5 / −5') + chip('RES') + '</div>', 'acc');
 
   h += card(ap, cardHead('Autopilot', ap) +
     '<div style="display: flex; gap: 40px">' +
@@ -243,8 +267,8 @@ function render(p) {
     '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">FOLLOWING DISTANCE</span>' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 44px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apDistance) + ' <span style="font-size: 18px; color: #9AA3AE">m</span></span>' +
     '</div></div>' +
-    '<div style="display: flex; gap: 8px; align-items: center">' + chip('ON / OFF') + chip('SPEED ±') + chip('DIST ±') +
-    '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Throttle overrides</span></div>');
+    '<div style="display: flex; gap: 8px; align-items: center">' + chip('ON / OFF') + chip('+5 / −5') + chip('GAP − / +') +
+    '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Brake or steer to take over</span></div>', 'autopilot');
   h += '</section>';
 
   // Speed and gear
@@ -375,29 +399,54 @@ function renderTip(p) {
     right + '</div></section>';
 }
 
-// A soft two-note chime as a tip appears, made with Web Audio so there is
-// no sound file. The browser is started with autoplay allowed.
+// Chimes, made with Web Audio so there is no sound file; the browser is
+// started with autoplay allowed. Each is a list of [frequency (Hz), start
+// (s), length (s)] notes in one voice. Rising is on, falling is off, and
+// autopilot's are three notes to ACC's two, so they are told apart unseen.
+var CHIMES = {
+  tip: { wave: 'sine', volume: 0.16, notes: [[659.25, 0, 1.3], [987.77, 0.16, 1.3]] },
+  accOn: { wave: 'triangle', volume: 0.2, notes: [[587.33, 0, 0.5], [880.0, 0.12, 0.7]] },
+  accOff: { wave: 'triangle', volume: 0.2, notes: [[880.0, 0, 0.5], [587.33, 0.12, 0.7]] },
+  autopilotOn: { wave: 'sine', volume: 0.18, notes: [[523.25, 0, 0.9], [659.25, 0.11, 0.9], [783.99, 0.22, 0.9], [1046.5, 0.33, 1.4]] },
+  // Handing the car back: falling, then a low note held with its octave
+  // below for weight, so it is noticed without sounding harsh.
+  autopilotOff: { wave: 'sine', volume: 0.2, notes: [[783.99, 0, 0.5], [659.25, 0.14, 0.5], [523.25, 0.28, 0.5], [392.0, 0.42, 1.4], [196.0, 0.42, 1.4]] }
+};
 var audio = null;
-function chime() {
+function chime(name) {
+  var c = CHIMES[name];
   try {
     audio = audio || new (window.AudioContext || window.webkitAudioContext)();
     if (audio.state === 'suspended') audio.resume();
     var t = audio.currentTime + 0.03;
-    [[659.25, 0], [987.77, 0.16]].forEach(function (note) {
+    c.notes.forEach(function (note) {
       var osc = audio.createOscillator();
       var gain = audio.createGain();
       var start = t + note[1];
-      osc.type = 'sine';
+      osc.type = c.wave;
       osc.frequency.value = note[0];
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.025);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.3);
+      gain.gain.exponentialRampToValueAtTime(c.volume, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + note[2]);
       osc.connect(gain);
       gain.connect(audio.destination);
       osc.start(start);
-      osc.stop(start + 1.4);
+      osc.stop(start + note[2] + 0.1);
     });
-  } catch (e) { /* no audio: the tip still shows */ }
+  } catch (e) { /* no audio: the dashboard still shows it */ }
+}
+
+// The chime for a change of assist: ACC or autopilot coming on or going off
+// (to standby or off); plain cruise has none.
+var lastAssist = null;
+function assistChime(assist) {
+  if (lastAssist !== null && assist !== lastAssist) {
+    if (lastAssist === 'Autopilot') chime('autopilotOff');
+    else if (lastAssist === 'ACC') chime('accOff');
+    if (assist === 'Autopilot') chime('autopilotOn');
+    else if (assist === 'ACC') chime('accOn');
+  }
+  lastAssist = assist;
 }
 
 var stage = document.getElementById('stage');
@@ -410,12 +459,15 @@ var shown = '';
 var shownTip = null;
 
 function draw() {
+  assistChime(state.activeAssist);
+  if (state.activeAssist === 'Autopilot' && !autopilotSince) autopilotSince = Date.now();
+  if (state.activeAssist !== 'Autopilot') autopilotSince = 0;
   frame.style.setProperty('--accent', state.accent);
   var tipKey = state.showTip ? JSON.stringify([state.tip, state.level]) : '';
   if (tipKey !== shownTip) {
     if (tipKey) {
       tipShownAt = Date.now();
-      chime();
+      chime('tip');
     }
     tipSlot.innerHTML = renderTip(state);
     shownTip = tipKey;

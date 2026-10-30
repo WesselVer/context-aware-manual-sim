@@ -38,18 +38,25 @@ speed (20 km/h or more, in D), + and - change the set speed by 5 km/h, and
 resume returns to the last set speed. Braking, the clutch, the hand brake or
 leaving D cancels it; the throttle overrides it while pressed.
 
-Adaptive cruise control (ACC) is a long press of on/off. It starts at the
-road's speed limit (30 km/h on a map without speed signs, such as Town10HD),
-follows the car ahead in your lane at the time gap set with gap - and +
+Adaptive cruise control (ACC) is a long press of on/off, from 20 km/h like
+plain cruise. It speeds up to 30 km/h, or keeps the current speed when that
+is faster, follows the car ahead in your lane at the time gap set with gap - and +
 (1.0, 1.5, 2.0 or 2.5 s; 1.5 s to start), and brakes, down to a stop. After
 more than 3 s stopped it waits for resume or the throttle. The same +, -,
 resume and cancels apply.
 
-Autopilot (the wheel's autopilot button, or P) drives the car around the map
+Autopilot (the wheel's autopilot button, or K) drives the car around the map
 on CARLA's Traffic Manager, slowly (30 km/h to start) and in Eco; the wheel
 turns with the car. + and - change its speed, gap - and + its following
 distance. Braking, leaving D, or turning the wheel against it (it resists
 at first) hands the car back, in the drive mode it had before.
+
+The context-aware manual (smart_manual_dashboard/tips.py) is off when the
+drive starts. B, E or P starts it for a Beginner, Experienced or Expert
+driver, which the dashboard's level selector lights up; holding R for a
+second stops it. A tip only comes at a safe moment: standing still, steady
+on a straight or a quiet road, with no junction coming up, few cars around
+and no manoeuvre under way. It stays until the driver has done it.
 """
 
 """
@@ -62,7 +69,7 @@ Use ARROWS or WASD keys for control.
     A/D          : steer left/right
     Q            : toggle reverse
     Space        : hand-brake
-    P            : toggle autopilot
+    K            : toggle autopilot
     M            : toggle manual transmission
     ,/.          : gear up/down
     CTRL + W     : toggle constant velocity mode at 60 km/h
@@ -82,10 +89,13 @@ Use ARROWS or WASD keys for control.
     O            : open/close all doors of vehicle
     T            : toggle vehicle's telemetry
 
-    V            : Select next map layer (Shift+V reverse)
-    B            : Load current selected map layer (Shift+B to unload)
+    B / E / P    : context-aware manual for a Beginner / Experienced / Expert
+    hold R       : context-aware manual off
 
-    R            : toggle recording images to disk
+    V            : Select next map layer (Shift+V reverse)
+    CTRL + B     : Load current selected map layer (CTRL + SHIFT + B to unload)
+
+    SHIFT + R    : toggle recording images to disk
 
     CTRL + R     : toggle recording of simulation (replacing any previous)
     CTRL + P     : start replaying last recorded simulation
@@ -139,10 +149,12 @@ try:
     from pygame.locals import K_b
     from pygame.locals import K_c
     from pygame.locals import K_d
+    from pygame.locals import K_e
     from pygame.locals import K_f
     from pygame.locals import K_g
     from pygame.locals import K_h
     from pygame.locals import K_i
+    from pygame.locals import K_k
     from pygame.locals import K_l
     from pygame.locals import K_m
     from pygame.locals import K_n
@@ -285,8 +297,10 @@ CRUISE_KI = 0.03
 # Held this long, on/off turns on adaptive cruise instead.
 LONG_PRESS_SECONDS = 0.6
 
-# Adaptive cruise: time gaps for gap 1-4, the distance kept at a standstill,
-# and how far ahead it looks.
+# Adaptive cruise: the lowest speed it sets when switched on (it keeps a
+# faster one), time gaps for gap 1-4, the distance kept at a standstill, and
+# how far ahead it looks.
+ACC_START_KMH = 30
 ACC_GAPS = [1.0, 1.5, 2.0, 2.5]
 ACC_DEFAULT_GAP = 2
 ACC_STANDSTILL_M = 5.0
@@ -311,6 +325,18 @@ AUTOPILOT_DRIVE_MODE = 0
 AUTOPILOT_BRAKE = 0.1
 AUTOPILOT_TAKEOVER_DEG = 40.0
 AUTOPILOT_TAKEOVER_SECONDS = 0.25
+
+# The context-aware manual: held this long, R turns it off. Its view of the
+# world: vehicles within CONTEXT_NEAR_M and pedestrians within
+# CONTEXT_WALKERS_NEAR_M are close by, and a junction is coming up within
+# JUNCTION_AHEAD_SECONDS at the current speed, never less than
+# JUNCTION_AHEAD_MIN_M.
+CONTEXT_OFF_HOLD_SECONDS = 1.0
+CONTEXT_NEAR_M = 30.0
+CONTEXT_WALKERS_NEAR_M = 15.0
+JUNCTION_AHEAD_SECONDS = 4.0
+JUNCTION_AHEAD_MIN_M = 25.0
+LEVEL_KEYS = {K_b: 'Beginner', K_e: 'Experienced', K_p: 'Expert'}
 
 
 class CruiseControl(object):
@@ -523,6 +549,61 @@ class LeadFinder(object):
             v = other.get_velocity()
             best = (max(0.0, gap), 3.6 * (v.x * fx + v.y * fy))
         return best
+
+
+class DrivingContext(object):
+    """What is around the car, for the context-aware tips (smart_manual_dashboard.tips).
+
+    The traffic close by and the junction ahead are measured 5 times a
+    second; a junction is looked for along the ego lane's waypoints (at a
+    junction, the straightest way on), and the car is in one counts as 0 m.
+    """
+
+    STEP = 5.0
+
+    def __init__(self, world):
+        self._world = world
+        self._map = world.get_map()
+        self._next = 0.0
+        self._around = (0, 0, None)
+
+    def update(self, ego, indicating):
+        """The context Tips.update() takes."""
+        speed = _speed_kmh(ego)
+        now = time.time()
+        if now >= self._next:
+            self._next = now + 0.2
+            self._around = self._measure(ego, speed)
+        cars, walkers, junction = self._around
+        return dict(speed=speed, yaw_rate=ego.get_angular_velocity().z, cars_near=cars,
+                    walkers_near=walkers, junction_ahead=junction, indicating=indicating)
+
+    def _measure(self, ego, speed):
+        here = ego.get_location()
+        cars = walkers = 0
+        for actor in self._world.get_actors():
+            if actor.id == ego.id:
+                continue
+            if actor.type_id.startswith('vehicle.'):
+                cars += actor.get_location().distance(here) <= CONTEXT_NEAR_M
+            elif actor.type_id.startswith('walker.pedestrian.'):
+                walkers += actor.get_location().distance(here) <= CONTEXT_WALKERS_NEAR_M
+        return cars, walkers, self._junction_ahead(here, speed)
+
+    def _junction_ahead(self, here, speed):
+        wp = self._map.get_waypoint(here)
+        reach = max(JUNCTION_AHEAD_MIN_M, JUNCTION_AHEAD_SECONDS * speed / 3.6)
+        along = 0.0
+        while wp is not None and along <= reach:
+            if wp.is_junction:
+                return along
+            ahead = wp.next(self.STEP)
+            if not ahead:
+                break
+            yaw = wp.transform.rotation.yaw
+            wp = min(ahead, key=lambda w: abs((w.transform.rotation.yaw - yaw + 180.0) % 360.0 - 180.0))
+            along += self.STEP
+        return None
 
 
 def _speed_kmh(vehicle):
@@ -758,9 +839,12 @@ class World(object):
 
 class KeyboardControl(object):
     """Class that handles keyboard input."""
-    def __init__(self, world, start_in_autopilot, wheel=None):
+    def __init__(self, world, start_in_autopilot, wheel=None, tips=None):
         self._autopilot_enabled = start_in_autopilot
         self._wheel = wheel
+        # The context-aware manual, and when R went down to turn it off.
+        self._tips = tips
+        self._r_down = None
         # --ffb-gain, which each drive mode scales.
         self._ffb_gain = wheel.ffb_gain if wheel is not None else 1.0
         self._drive_mode = DEFAULT_DRIVE_MODE
@@ -810,7 +894,12 @@ class KeyboardControl(object):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return True
+            elif event.type == pygame.KEYDOWN:
+                if event.key == K_r and not pygame.key.get_mods() & (KMOD_CTRL | KMOD_SHIFT):
+                    self._r_down = time.time()
             elif event.type == pygame.KEYUP:
+                if event.key == K_r:
+                    self._r_down = None
                 if self._is_quit_shortcut(event.key):
                     return True
                 elif event.key == K_BACKSPACE:
@@ -827,6 +916,9 @@ class KeyboardControl(object):
                     world.next_map_layer(reverse=True)
                 elif event.key == K_v:
                     world.next_map_layer()
+                elif event.key in LEVEL_KEYS and not pygame.key.get_mods() & KMOD_CTRL:
+                    if self._tips is not None:
+                        world.hud.notification(self._tips.start(LEVEL_KEYS[event.key]))
                 elif event.key == K_b and pygame.key.get_mods() & KMOD_SHIFT:
                     world.load_map_layer(unload=True)
                 elif event.key == K_b:
@@ -883,7 +975,7 @@ class KeyboardControl(object):
                     if pygame.key.get_mods() & KMOD_CTRL:
                         index_ctrl = 9
                     world.camera_manager.set_sensor(event.key - 1 - K_0 + index_ctrl)
-                elif event.key == K_r and not (pygame.key.get_mods() & KMOD_CTRL):
+                elif event.key == K_r and pygame.key.get_mods() & KMOD_SHIFT:
                     world.camera_manager.toggle_recording()
                 elif event.key == K_r and (pygame.key.get_mods() & KMOD_CTRL):
                     if (world.recording_enabled):
@@ -943,7 +1035,7 @@ class KeyboardControl(object):
                         self._control.gear = max(-1, self._control.gear - 1)
                     elif self._control.manual_gear_shift and event.key == K_PERIOD:
                         self._control.gear = self._control.gear + 1
-                    elif event.key == K_p and not pygame.key.get_mods() & KMOD_CTRL:
+                    elif event.key == K_k:
                         self._set_autopilot(world, not self._autopilot_enabled)
                     elif event.key == K_l and pygame.key.get_mods() & KMOD_CTRL:
                         current_lights ^= carla.VehicleLightState.Special1
@@ -972,6 +1064,11 @@ class KeyboardControl(object):
                         current_lights ^= carla.VehicleLightState.LeftBlinker
                     elif event.key == K_x:
                         current_lights ^= carla.VehicleLightState.RightBlinker
+
+        if self._r_down is not None and time.time() - self._r_down >= CONTEXT_OFF_HOLD_SECONDS:
+            self._r_down = None
+            if self._tips is not None and self._tips.running:
+                world.hud.notification(self._tips.stop())
 
         if self._autopilot_enabled and isinstance(self._control, carla.VehicleControl):
             self._parse_autopilot(world, pygame.key.get_pressed(), clock.get_time() / 1000.0)
@@ -1219,10 +1316,8 @@ class KeyboardControl(object):
             return
         if long_press:
             self._cruise.lead = self._lead_finder(world).update(world.player)
-            # The limit of the road, from the last speed sign; 30 km/h on a
-            # map without signs, such as Town10HD.
-            limit = int(round(world.player.get_speed_limit()))
-            message = self._cruise.adaptive_on(kmh, throttle, limit)
+            start = max(ACC_START_KMH, int(round(kmh)))
+            message = self._cruise.adaptive_on(kmh, throttle, start)
         elif button == CRUISE_ON_OFF:
             message = self._cruise.toggle(kmh, throttle)
         elif button == CRUISE_RESUME:
@@ -1300,6 +1395,12 @@ class KeyboardControl(object):
     @property
     def autopilot_enabled(self):
         return self._autopilot_enabled
+
+    @property
+    def indicating(self):
+        """A blinker is on."""
+        blinkers = carla.VehicleLightState.LeftBlinker | carla.VehicleLightState.RightBlinker
+        return bool(getattr(self, '_lights', 0) & blinkers)
 
     def _parse_walker_keys(self, keys, milliseconds, world):
         self._control.speed = 0.0
@@ -1963,7 +2064,8 @@ def game_loop(args):
 
         hud = HUD(args.width, args.height)
         world = World(sim_world, hud, traffic_manager, args)
-        controller = KeyboardControl(world, args.autopilot, wheel)
+        controller = KeyboardControl(world, args.autopilot, wheel, tips)
+        context = DrivingContext(sim_world)
 
         if args.sync:
             sim_world.tick()
@@ -1994,7 +2096,7 @@ def game_loop(args):
                                  controller.autopilot_enabled, clock.get_time() / 1000.0)
             if dashboard is not None:
                 state = controller.dashboard_state()
-                state.update(tips.update(speed))
+                state.update(tips.update(state, context.update(world.player, controller.indicating)))
                 dashboard.update(speed=int(round(speed)), **state)
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))

@@ -1,0 +1,272 @@
+<title>Smart Manual Tips Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!--
+  Template for make_showcase.py: the replay page of the dashboard and its
+  tips. The build fills in the fonts, the dashboard's own style and script,
+  and the scripted drive's frames.
+-->
+<style>
+/*FONTS*/
+/* One dark world, the dashboard's own: the page frames the screen like the
+   sim room does. Screen first, then the story of each moment, then the rules. */
+:root {
+  --bg: #07090C;
+  --panel: #0F1318;
+  --line: #1E242D;
+  --fg: #E8EAED;
+  --muted: #9AA3AE;
+  --faint: #6B7480;
+  --accent: #4DA3FF;
+  --ok: #3DD68C;
+  --display: 'Barlow Semi Condensed', 'Arial Narrow', sans-serif;
+  --body: 'Barlow', system-ui, sans-serif;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 16px; line-height: 1.5; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 32px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 28px; }
+.eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 0.14em; color: var(--accent); }
+h1 { margin: 6px 0 8px; font-family: var(--display); font-weight: 700; font-size: clamp(32px, 5vw, 52px); line-height: 1.05; text-wrap: balance; }
+.lede { margin: 0; max-width: 68ch; color: var(--muted); font-size: 17px; }
+h2 { margin: 0 0 12px; font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: var(--muted); }
+
+.player { display: flex; flex-direction: column; gap: 14px; }
+.screen { position: relative; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); background: #0B0E13; }
+.screen #stage { cursor: default; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 600 15px var(--body); cursor: pointer; }
+.btn:hover { border-color: var(--faint); }
+.btn:focus-visible, .chapter:focus-visible, #scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #0B0E13; min-width: 104px; justify-content: center; }
+.time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 15px; }
+.spacer { flex-grow: 1; }
+.scrub { position: relative; height: 28px; }
+.scrub input { position: absolute; inset: 0; width: 100%; margin: 0; accent-color: var(--accent); background: transparent; }
+.ticks { position: absolute; left: 8px; right: 8px; top: 0; height: 6px; pointer-events: none; }
+.ticks span { position: absolute; top: 0; width: 2px; height: 6px; background: var(--faint); transform: translateX(-1px); }
+.caption { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; align-items: baseline; padding: 16px 20px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-height: 76px; }
+.caption .n { grid-row: span 2; font: 700 34px/1 var(--display); color: var(--accent); font-variant-numeric: tabular-nums; }
+.caption .t { font: 700 22px/1.2 var(--display); }
+.caption .x { color: var(--muted); max-width: 80ch; }
+
+.chapters { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.chapter { width: 100%; height: 100%; display: grid; grid-template-columns: 38px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--fg); font: 600 15px var(--body); text-align: left; cursor: pointer; }
+.chapter:hover { background: var(--panel); }
+.chapter .n { font: 700 18px var(--display); color: var(--faint); font-variant-numeric: tabular-nums; }
+.chapter .at { font-size: 13px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.chapter.now { border-color: var(--accent); background: var(--panel); }
+.chapter.now .n { color: var(--accent); }
+.chapter.tip .n::after { content: ' •'; color: var(--ok); }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.rule { padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); min-width: 0; }
+.rule h3 { margin: 0 0 8px; font: 700 20px var(--display); }
+.rule ul { margin: 0; padding-left: 18px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.rule b { color: var(--fg); font-weight: 600; }
+.rule.good h3 { color: var(--ok); }
+.rule.bad h3 { color: #F5A524; }
+kbd { padding: 0 6px; border-radius: 5px; border: 1px solid var(--faint); font: 700 13px var(--body); color: var(--fg); }
+footer { color: var(--faint); font-size: 14px; max-width: 80ch; }
+
+/* The dashboard, as it runs on screen 2. */
+/*DASHBOARD_STYLE*/
+</style>
+
+<main class="wrap">
+  <header>
+    <div class="eyebrow">SMART MANUAL · CONTEXT-AWARE VEHICLE MANUAL</div>
+    <h1>Beginner tips, replayed</h1>
+    <p class="lede">The second-screen dashboard from the CARLA driving simulator, through one Beginner drive. The manual watches the drive and gives each tip only at a calm moment: standing still, steady on a straight, or on a quiet road. Each tip stays until the driver has done it.</p>
+  </header>
+
+  <section class="player" aria-label="Dashboard replay">
+    <div class="screen"><div id="stage"><div id="frame"><div id="top"></div><div id="tipslot"></div></div></div></div>
+    <div class="scrub">
+      <div class="ticks" id="ticks"></div>
+      <input type="range" id="scrub" min="0" step="0.1" value="0" aria-label="Replay position">
+    </div>
+    <div class="controls">
+      <button class="btn primary" id="play" type="button">Pause</button>
+      <span class="time" id="time">0:00 / 2:30</span>
+      <span class="spacer"></span>
+      <button class="btn" id="rate" type="button" aria-pressed="false">2× speed</button>
+      <button class="btn" id="sound" type="button" aria-pressed="false">Sound off</button>
+    </div>
+    <div class="caption" aria-live="polite">
+      <span class="n" id="capN">1</span>
+      <span class="t" id="capT"></span>
+      <span class="x" id="capX"></span>
+    </div>
+  </section>
+
+  <section aria-label="Moments in the drive">
+    <h2>MOMENTS IN THE DRIVE · <span style="color: var(--ok)">•</span> A TIP SHOWS</h2>
+    <ol class="chapters" id="chapters"></ol>
+  </section>
+
+  <section aria-label="How the timing is decided">
+    <h2>HOW THE MANUAL PICKS ITS MOMENT</h2>
+    <div class="rules">
+      <div class="rule good">
+        <h3>A good moment</h3>
+        <ul>
+          <li><b>Standing still</b> for 4 s</li>
+          <li><b>Steady speed</b> on a straight for 6 s</li>
+          <li><b>A quiet road</b>: one car or none within 30 m</li>
+        </ul>
+      </div>
+      <div class="rule bad">
+        <h3>Held back when</h3>
+        <ul>
+          <li>A <b>junction</b> is coming up (4 s ahead)</li>
+          <li><b>3 or more cars</b> within 30 m</li>
+          <li>A <b>manoeuvre</b>: turning, reversing, indicating, braking hard, and for 3 s after</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Beginner curriculum</h3>
+        <ul>
+          <li>Cruise control on and off</li>
+          <li>Brake to switch it off, after using it a while</li>
+          <li>Adaptive cruise, a long press</li>
+          <li>Autopilot, after using ACC a while</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Running a session</h3>
+        <ul>
+          <li><kbd>B</kbd> <kbd>E</kbd> <kbd>P</kbd> start Beginner, Experienced or Expert</li>
+          <li>Hold <kbd>R</kbd> to switch the manual off</li>
+          <li>Something already done before its tip is skipped</li>
+          <li>Experienced and Expert tips are next</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>The screen is the real dashboard code (smart_manual_dashboard/dashboard.html). The drive is scripted, but when each tip appears, waits and completes is decided by the same tips.py that runs in the simulator. Progress as of 30 October 2026.</footer>
+</main>
+
+<script>
+'use strict';
+/*DASHBOARD_SCRIPT*/
+
+// -- the player ---------------------------------------------------------------
+var DATA = /*DATA*/;
+var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+window.soundOn = false;
+var pos = 0;           // frame index
+var playing = !reduceMotion;
+var rate = 1;
+var carry = 0;
+var lastTs = null;
+var scrub = document.getElementById('scrub');
+var playBtn = document.getElementById('play');
+var chapterEls = [];
+
+function fmt(s) { s = Math.floor(s); return Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2); }
+
+function chapterAt(t) {
+  var i = 0;
+  DATA.chapters.forEach(function (c, k) { if (c.t <= t + 1e-6) i = k; });
+  return i;
+}
+
+var shownChapter = -1;
+function showTime() {
+  var t = pos * DATA.dt;
+  scrub.value = t.toFixed(1);
+  document.getElementById('time').textContent = fmt(t) + ' / ' + fmt(DATA.duration);
+  var i = chapterAt(t);
+  if (i !== shownChapter) {
+    var c = DATA.chapters[i];
+    document.getElementById('capN').textContent = i + 1;
+    document.getElementById('capT').textContent = c.title;
+    document.getElementById('capX').textContent = c.text;
+    chapterEls.forEach(function (el, k) { el.classList.toggle('now', k === i); });
+    shownChapter = i;
+  }
+}
+
+// Rebuilds the state at a frame from the start; quiet, so no chimes play.
+function seek(t) {
+  var target = Math.max(0, Math.min(DATA.frames.length - 1, Math.round(t / DATA.dt)));
+  var sound = window.soundOn;
+  window.soundOn = false;
+  state = Object.assign({}, DEFAULTS);
+  for (var i = 0; i <= target; i++) Object.assign(state, DATA.frames[i]);
+  pos = target;
+  draw();
+  window.soundOn = sound;
+  showTime();
+}
+
+function setPlaying(on) {
+  playing = on;
+  playBtn.textContent = on ? 'Pause' : (pos >= DATA.frames.length - 1 ? 'Replay' : 'Play');
+  lastTs = null;
+}
+
+function tick(ts) {
+  if (playing) {
+    if (lastTs !== null) carry += Math.min(0.25, (ts - lastTs) / 1000) * rate;
+    lastTs = ts;
+    var moved = false;
+    while (carry >= DATA.dt && pos < DATA.frames.length - 1) {
+      pos++;
+      Object.assign(state, DATA.frames[pos]);
+      carry -= DATA.dt;
+      moved = true;
+    }
+    if (moved) { draw(); showTime(); }
+    if (pos >= DATA.frames.length - 1) setPlaying(false);
+  }
+  requestAnimationFrame(tick);
+}
+
+// Chapter list and the ticks on the scrubber.
+var ticks = document.getElementById('ticks');
+DATA.chapters.forEach(function (c, k) {
+  var li = document.createElement('li');
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'chapter' + (/^Tip /.test(c.title) ? ' tip' : '');
+  b.innerHTML = '<span class="n">' + (k + 1) + '</span><span>' + esc(c.title) + '</span><span class="at">' + fmt(c.t) + '</span>';
+  b.addEventListener('click', function () { seek(c.t); setPlaying(true); });
+  li.appendChild(b);
+  document.getElementById('chapters').appendChild(li);
+  chapterEls.push(b);
+  var mark = document.createElement('span');
+  mark.style.left = (c.t / DATA.duration * 100) + '%';
+  ticks.appendChild(mark);
+});
+
+scrub.max = DATA.duration;
+scrub.addEventListener('input', function () { seek(Number(scrub.value)); });
+playBtn.addEventListener('click', function () {
+  if (pos >= DATA.frames.length - 1) seek(0);
+  setPlaying(!playing);
+});
+document.getElementById('rate').addEventListener('click', function () {
+  rate = rate === 1 ? 2 : 1;
+  this.setAttribute('aria-pressed', rate === 2 ? 'true' : 'false');
+});
+document.getElementById('sound').addEventListener('click', function () {
+  window.soundOn = !window.soundOn;
+  this.setAttribute('aria-pressed', window.soundOn ? 'true' : 'false');
+  this.textContent = window.soundOn ? 'Sound on' : 'Sound off';
+  if (window.soundOn) {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      audio.resume();
+    } catch (e) { /* no audio */ }
+  }
+  draw();
+});
+
+window.addEventListener('resize', fit);
+fit();
+seek(0);
+setPlaying(playing);
+requestAnimationFrame(tick);
+</script>

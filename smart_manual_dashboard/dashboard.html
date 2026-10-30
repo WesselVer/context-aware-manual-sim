@@ -16,10 +16,17 @@
 
   ACC and autopilot coming on and going off each have their own chime.
 
+  The context-aware manual (tips.py) is off until the driver script sends a
+  level; the header's level selector then lights up and pulses, and the tip
+  panel says what the manual is waiting for (contextStatus, tipProgress).
+
   A tip (showTip + tip) slides in with a chime, outlines the zones it names
-  in tip.highlight, and draws tip.gesture, the movement the driver makes.
+  in tip.highlight, and draws either tip.control, the G25 shifter button to
+  tap or hold, or tip.gesture, the movement the driver makes. Once the driver
+  has done it, tip.complete shows it done, with a chime of its own.
   Zones: speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen.
-  Gestures: release-throttle.
+  Buttons: cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, gap-minus, gap-plus.
+  Gestures: release-throttle, press-brake.
 -->
 <style>
 @font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
@@ -40,7 +47,8 @@ button { font: inherit; }
   0%, 100% { outline-color: var(--accent); box-shadow: 0 0 34px 14px rgba(77, 163, 255, 0.22); }
   50% { outline-color: rgba(77, 163, 255, 0.45); box-shadow: 0 0 18px 6px rgba(77, 163, 255, 0.08); }
 }
-.zone-tag { position: absolute; top: -36px; left: -14px; padding: 2px 10px; border-radius: 6px; font: 700 13px 'Barlow', sans-serif; letter-spacing: 0.08em; background: var(--accent); color: #0B0E13; }
+/* On the outline's top-right corner, where the zones have room above them. */
+.zone-tag { position: absolute; top: -24px; right: -14px; padding: 2px 10px; border-radius: 6px; font: 700 13px 'Barlow', sans-serif; letter-spacing: 0.08em; background: var(--accent); color: #0B0E13; }
 /* The tip's arrival: slides up, its border flashes and settles. */
 .tip-in { animation: tipSlide 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), tipGlow 2.6s ease-out; }
 @keyframes tipSlide { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
@@ -57,6 +65,34 @@ button { font: inherit; }
 @keyframes gFoot { 0%, 22% { transform: rotate(0deg); } 52%, 100% { transform: rotate(-13deg); } }
 @keyframes gPedal { 0%, 22% { transform: rotate(-18deg); } 52%, 100% { transform: rotate(-36deg); } }
 @keyframes gArrow { 0%, 30% { opacity: 0; transform: translateY(10px); } 52%, 86% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+/* press-brake: the same foot pressing the brake pedal down. */
+.g-foot-press { transform-box: view-box; transform-origin: 84px 168px; animation: gFootPress 3.4s ease-in-out infinite; }
+.g-pedal-press { transform-box: view-box; transform-origin: 210px 168px; animation: gPedalPress 3.4s ease-in-out infinite; }
+.g-arrow-down { animation: gArrowDown 3.4s ease-in-out infinite; }
+@keyframes gFootPress { 0%, 22% { transform: rotate(-13deg); } 52%, 100% { transform: rotate(0deg); } }
+@keyframes gPedalPress { 0%, 22% { transform: rotate(-36deg); } 52%, 100% { transform: rotate(-18deg); } }
+@keyframes gArrowDown { 0%, 30% { opacity: 0; transform: translateY(-10px); } 52%, 86% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+/* A shifter button to tap: it presses in and a ripple goes out. To hold:
+   it stays in while a ring fills around it. */
+.c-tap { transform-box: fill-box; transform-origin: center; animation: cTap 1.8s ease-in-out infinite; }
+.c-ripple { transform-box: fill-box; transform-origin: center; animation: cRipple 1.8s ease-out infinite; }
+@keyframes cTap { 0%, 10%, 32%, 100% { transform: scale(1); } 18% { transform: scale(0.78); } }
+@keyframes cRipple { 0%, 16% { opacity: 0; transform: scale(1); } 20% { opacity: 1; transform: scale(1); } 70%, 100% { opacity: 0; transform: scale(2.6); } }
+.c-held { transform-box: fill-box; transform-origin: center; animation: cHeld 2.8s ease-in-out infinite; }
+.c-hold { stroke-dasharray: 100.5; animation: cHold 2.8s linear infinite; }
+@keyframes cHeld { 0%, 6% { transform: scale(1); } 10%, 62% { transform: scale(0.78); } 68%, 100% { transform: scale(1); } }
+@keyframes cHold { 0%, 10% { stroke-dashoffset: 100.5; opacity: 1; } 60%, 84% { stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+/* A tip done: the tick draws itself. */
+.d-tick { stroke-dasharray: 60; animation: dTick 0.6s 0.15s ease-out both; }
+@keyframes dTick { from { stroke-dashoffset: 60; } to { stroke-dashoffset: 0; } }
+/* The context-aware manual running: the level selector breathes and its dot blinks. */
+.ctx-live { animation: ctxPulse 3s ease-in-out infinite; }
+@keyframes ctxPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(77, 163, 255, 0); }
+  50% { box-shadow: 0 0 26px 4px rgba(77, 163, 255, 0.35); }
+}
+.ctx-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: ctxDot 1.5s ease-in-out infinite; }
+@keyframes ctxDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 /* Autopilot driving: its card breathes, so it is clear the car drives itself.
    Kept in step across redraws like the tip zones, from when it came on. */
 .ap-live { animation: apPulse 2.2s ease-in-out infinite; }
@@ -78,7 +114,9 @@ button { font: inherit; }
 // not in.
 var DEFAULTS = {
   activeAssist: 'None',   // None | Cruise | Cruise standby | ACC | ACC standby | Autopilot
-  level: 'Experienced',   // Beginner | Experienced | Expert
+  level: null,            // Beginner | Experienced | Expert; null while the context-aware manual is off
+  contextStatus: null,    // what the manual waits for, under an empty tip panel
+  tipProgress: null,      // [tips given, tips for the level]
   speed: null,            // km/h; null until the first reading
   setSpeed: null,         // km/h; null when no speed is set
   throttleOverride: null, // true while the pedal overrides an assist; null works it out from the bars
@@ -94,7 +132,7 @@ var DEFAULTS = {
   driveMode: 'Normal',    // Eco | Normal | Sport
   regenLevel: 1,          // 0..3: Off | Low | Medium | Maximum
   showTip: false,
-  tip: null,              // {title, body, why, key, input}; null uses the level's sample tip
+  tip: null,              // {title, body, why, highlight, control | gesture, action, complete}; null uses the level's sample tip
   accent: '#4DA3FF'
 };
 
@@ -138,6 +176,7 @@ function chip(text) {
 
 var tipShownAt = 0;
 var autopilotSince = 0;
+var contextSince = 0;
 
 // A zone the tip names gets the zone-on outline and a TIP tag. zoneAttr
 // opens the element's style attribute, so the caller adds its own style.
@@ -162,6 +201,9 @@ function render(p) {
   var pedal = p.driverPedal;
   var brake = p.brake;
   var regen = Math.max(0, Math.min(3, p.regenLevel));
+  // While a tip shows, its panel grows and everything above compacts.
+  var compact = p.showTip;
+  function z(full, small) { return compact ? small : full; }
 
   var active = { border: accent, bg: '#132238', chipText: 'ACTIVE', chipBg: accent, chipFg: '#0B0E13', value: '#E8EAED' };
   var standby = { border: '#6B5217', bg: '#1A1710', chipText: 'STANDBY', chipBg: '#3A2E14', chipFg: '#F5A524', value: '#E8EAED' };
@@ -194,7 +236,7 @@ function render(p) {
     if (zone === 'autopilot' && assist === 'Autopilot' && !zoneOn(p, zone)) {
       attr = ' class="ap-live" style="animation-delay: -' + (Date.now() - autopilotSince) + 'ms; ';
     }
-    return '<div' + attr + 'flex-grow: 1; box-sizing: border-box; padding: 18px 22px; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, zone) + inner + '</div>';
+    return '<div' + attr + 'flex-grow: 1; box-sizing: border-box; padding: ' + z('18px 22px', '10px 18px') + '; border-radius: 16px; border: 2px solid ' + s.border + '; background: ' + s.bg + '; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, zone) + inner + '</div>';
   }
   function cardHead(title, s) {
     return '<div style="display: flex; align-items: center; justify-content: space-between">' +
@@ -212,13 +254,22 @@ function render(p) {
     '<span style="font-size: 19px; color: #9AA3AE">Context-aware driving guide</span>' +
     '</div>' +
     '<div style="display: flex; align-items: center; gap: 14px">' +
-    '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">TIPS TUNED TO</span>' +
-    '<div style="display: flex; gap: 6px; padding: 5px; border-radius: 12px; background: #141920; border: 1px solid #262D38">';
-  ['Beginner', 'Experienced', 'Expert'].forEach(function (l) {
-    var on = l === level;
-    h += '<span style="padding: 8px 18px; border-radius: 8px; font-size: 17px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + l + '</span>';
+    (level
+      ? '<span style="display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: ' + accent + '">' +
+        '<span class="ctx-dot" style="animation-delay: -' + (Date.now() - contextSince) + 'ms"></span>CONTEXT AWARE · ON</span>'
+      : '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #7F8995">CONTEXT AWARE · OFF</span>') +
+    '<div' + (level ? ' class="ctx-live" style="animation-delay: -' + (Date.now() - contextSince) + 'ms; ' : ' style="') +
+    'display: flex; gap: 6px; padding: 5px; border-radius: 12px; background: #141920; border: 1px solid ' + (level ? accent : '#262D38') + '">';
+  // Each level with the key that starts it.
+  [['Beginner', 'B'], ['Experienced', 'E'], ['Expert', 'P']].forEach(function (l) {
+    var on = l[0] === level;
+    var fg = on ? '#0B0E13' : (level ? '#9AA3AE' : '#6B7480');
+    h += '<span style="display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 18px; border-radius: 8px; font-size: 17px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + fg + '">' + l[0] +
+      '<span style="padding: 0 6px; border-radius: 5px; border: 1px solid ' + fg + '; font-size: 13px; font-weight: 700; line-height: 18px; opacity: 0.75">' + l[1] + '</span></span>';
   });
-  h += '</div></div></header>';
+  h += '</div>' +
+    (level ? '<span style="font-size: 14px; color: #7F8995">Hold R to stop</span>' : '') +
+    '</div></header>';
 
   h += '<main style="flex-grow: 1; min-height: 0; display: flex; gap: 24px">';
 
@@ -228,7 +279,7 @@ function render(p) {
 
   h += card(cc, cardHead('Cruise control', cc) +
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(ccSpeed) + '</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(56, 38) + 'px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(ccSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h set speed</span></div>' +
     '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('+5 / −5') + chip('RES') +
     '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Brake cancels</span></div>', 'cruise');
@@ -245,12 +296,12 @@ function render(p) {
   h += card(acc, cardHead('Adaptive cruise', acc) +
     '<div style="display: flex; align-items: center; gap: 28px">' +
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 56px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(accSpeed) + '</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(56, 38) + 'px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(accSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h</span></div>' +
     '<div style="display: flex; align-items: center; gap: 14px">' +
-    '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + leadCar + bars +
+    (compact ? '' : '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + leadCar + bars +
     '<svg width="40" height="26" viewBox="0 0 40 26" fill="none" stroke="#C9D0D8" stroke-width="2" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="10" x2="28" y2="10"></line></svg>' +
-    '</div>' +
+    '</div>') +
     '<div style="display: flex; flex-direction: column; gap: 2px">' +
     '<span style="font-size: 22px; font-weight: 600; color: ' + acc.value + '">Gap ' + gap + ' · ' + gapSeconds + '</span>' +
     '<span style="font-size: 16px; color: ' + (p.accWaiting && assist === 'ACC' ? '#F5A524' : '#9AA3AE') + '">' + leadText + '</span>' +
@@ -261,20 +312,20 @@ function render(p) {
     '<div style="display: flex; gap: 40px">' +
     '<div style="display: flex; flex-direction: column; gap: 2px">' +
     '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">TARGET SPEED</span>' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 44px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apTarget) + ' <span style="font-size: 18px; color: #9AA3AE">km/h</span></span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(44, 32) + 'px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apTarget) + ' <span style="font-size: 18px; color: #9AA3AE">km/h</span></span>' +
     '</div>' +
     '<div style="display: flex; flex-direction: column; gap: 2px">' +
     '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #9AA3AE">FOLLOWING DISTANCE</span>' +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 44px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apDistance) + ' <span style="font-size: 18px; color: #9AA3AE">m</span></span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(44, 32) + 'px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apDistance) + ' <span style="font-size: 18px; color: #9AA3AE">m</span></span>' +
     '</div></div>' +
     '<div style="display: flex; gap: 8px; align-items: center">' + chip('ON / OFF') + chip('+5 / −5') + chip('GAP − / +') +
     '<span style="font-size: 15px; color: #9AA3AE; margin-left: 6px">Brake or steer to take over</span></div>', 'autopilot');
   h += '</section>';
 
   // Speed and gear
-  h += '<section aria-label="Speed and gear" style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 32px 48px; border-radius: 20px; background: #10141A; border: 1px solid #1E242D; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px">' +
+  h += '<section aria-label="Speed and gear" style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: ' + z('32px 48px', '14px 40px') + '; border-radius: 20px; background: #10141A; border: 1px solid #1E242D; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: ' + z(22, 10) + 'px">' +
     '<div' + zoneAttr(p, 'speed') + 'display: flex; flex-direction: column; align-items: center">' + zoneTag(p, 'speed') +
-    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 220px; font-weight: 600; line-height: 0.88; font-variant-numeric: tabular-nums">' + (speed === null ? '–' : esc(speed)) + '</span>' +
+    '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(220, 120) + 'px; font-weight: 600; line-height: 0.88; font-variant-numeric: tabular-nums">' + (speed === null ? '–' : esc(speed)) + '</span>' +
     '<div style="display: flex; align-items: center; gap: 16px; margin-top: 8px">' +
     '<span style="font-size: 26px; color: #9AA3AE">km/h</span>' +
     (showMarker ? '<span style="padding: 4px 12px; border-radius: 8px; font-size: 18px; font-weight: 700; letter-spacing: 0.04em; background: #132238; color: ' + accent + '">SET ' + esc(markerSpeed) + '</span>' : '') +
@@ -291,7 +342,7 @@ function render(p) {
   h += '<div role="img" aria-label="Gear selector"' + zoneAttr(p, 'gear') + 'display: flex; gap: 12px">' + zoneTag(p, 'gear');
   ['P', 'R', 'N', 'D'].forEach(function (g) {
     var on = g === p.gear;
-    h += '<span style="width: 88px; height: 76px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 46px; font-weight: 700; border: 2px solid ' + (on ? '#E8EAED' : '#262D38') + '; background: ' + (on ? '#E8EAED' : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#7F8995') + '">' + g + '</span>';
+    h += '<span style="width: ' + z(88, 72) + 'px; height: ' + z(76, 52) + 'px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(46, 34) + 'px; font-weight: 700; border: 2px solid ' + (on ? '#E8EAED' : '#262D38') + '; background: ' + (on ? '#E8EAED' : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#7F8995') + '">' + g + '</span>';
   });
   h += '</div>';
 
@@ -317,18 +368,18 @@ function render(p) {
   // Drivetrain column
   h += '<section aria-label="Drivetrain" style="width: 560px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px">' +
     '<h2 style="margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.08em; color: #9AA3AE">DRIVETRAIN</h2>' +
-    '<div' + zoneAttr(p, 'driveMode') + 'flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'driveMode') +
+    '<div' + zoneAttr(p, 'driveMode') + 'flex-grow: 1; box-sizing: border-box; padding: ' + z(22, 12) + 'px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'driveMode') +
     '<span style="font-size: 24px; font-weight: 600">Drive mode</span>' +
     '<div style="display: flex; gap: 6px; padding: 6px; border-radius: 12px; background: #0B0E13">';
   ['Eco', 'Normal', 'Sport'].forEach(function (m) {
     var on = m === p.driveMode;
-    h += '<span style="flex-grow: 1; flex-basis: 0; text-align: center; padding: 14px 0; border-radius: 8px; font-size: 22px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + m + '</span>';
+    h += '<span style="flex-grow: 1; flex-basis: 0; text-align: center; padding: ' + z('14px 0', '8px 0') + '; border-radius: 8px; font-size: 22px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + m + '</span>';
   });
   h += '</div>' +
     '<div style="display: flex; justify-content: space-between; font-size: 16px; color: #9AA3AE">' +
     '<span>‹ Left paddle</span><span>Right paddle ›</span></div></div>';
 
-  h += '<div' + zoneAttr(p, 'regen') + 'flex-grow: 1; box-sizing: border-box; padding: 22px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'regen') +
+  h += '<div' + zoneAttr(p, 'regen') + 'flex-grow: 1; box-sizing: border-box; padding: ' + z(22, 12) + 'px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'regen') +
     '<div style="display: flex; align-items: baseline; justify-content: space-between">' +
     '<span style="font-size: 24px; font-weight: 600">Regenerative braking</span>' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 34px; font-weight: 600; color: ' + accent + '">' + regenNames[regen] + '</span>' +
@@ -364,39 +415,129 @@ var GESTURES = {
     '<path d="M80 170 L268 147 Q284 144 278 128 L146 96 Q124 90 112 102 L78 136 Q68 158 80 170 Z" fill="#3A4250" stroke="#E8EAED"></path>' +
     '</g>' +
     '<path class="g-arrow" d="M330 124 L330 72 M314 88 L330 72 L346 88" stroke="var(--accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>' +
+    '</g></svg>',
+  'press-brake':
+    '<svg width="260" height="130" viewBox="40 40 320 160" fill="none" aria-hidden="true">' +
+    '<defs><linearGradient id="g-shin" x1="0" y1="1" x2="0" y2="0"><stop offset="0.35" stop-color="#3A4250"></stop><stop offset="1" stop-color="#3A4250" stop-opacity="0"></stop></linearGradient>' +
+    '<linearGradient id="g-shin-edge" x1="0" y1="1" x2="0" y2="0"><stop offset="0.35" stop-color="#E8EAED"></stop><stop offset="1" stop-color="#E8EAED" stop-opacity="0"></stop></linearGradient></defs>' +
+    '<line x1="44" y1="170" x2="356" y2="170" stroke="#3A4250" stroke-width="3" stroke-linecap="round"></line>' +
+    '<text x="210" y="192" text-anchor="middle" font-family="Barlow, sans-serif" font-size="16" font-weight="700" letter-spacing="1.5" fill="#7F8995">BRAKE</text>' +
+    '<g class="g-loop">' +
+    '<g class="g-pedal-press"><rect x="210" y="161" width="92" height="14" rx="6" fill="#F5A524"></rect></g>' +
+    '<circle cx="210" cy="168" r="7" fill="#7F8995"></circle>' +
+    '<g class="g-foot-press" stroke-width="3" stroke-linejoin="round">' +
+    '<path d="M112 104 L148 96 L122 30 L80 30 Z" fill="url(#g-shin)" stroke="url(#g-shin-edge)"></path>' +
+    '<path d="M80 170 L268 147 Q284 144 278 128 L146 96 Q124 90 112 102 L78 136 Q68 158 80 170 Z" fill="#3A4250" stroke="#E8EAED"></path>' +
+    '</g>' +
+    '<path class="g-arrow-down" d="M330 72 L330 124 M314 108 L330 124 L346 108" stroke="#F5A524" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>' +
     '</g></svg>'
 };
 
+// The G25 shifter unit's buttons, as the reference sheet places them: the
+// cruise cluster in the silver panel (on/off at the top, -5 left, +5 right,
+// resume below) and the red row (autopilot, gap -, gap +, unused).
+var SHIFTER_BUTTONS = {
+  'cc-onoff': [80, 28], 'cc-minus': [60, 46], 'cc-plus': [100, 46], 'cc-resume': [80, 64],
+  'autopilot': [44, 102], 'gap-minus': [68, 102], 'gap-plus': [92, 102], 'red-4': [116, 102]
+};
+
+// A control tip's drawing: the top of the shifter with the button to use
+// lit, pressing in (tap) or held while a ring fills (hold), and a leader
+// line out to its label.
+function controlSvg(c) {
+  var target = SHIFTER_BUTTONS[c.button] || SHIFTER_BUTTONS['cc-onoff'];
+  var hold = c.press === 'hold';
+  var tx = target[0], ty = target[1];
+  var s = '<svg width="320" height="134" viewBox="0 0 330 138" fill="none" aria-hidden="true">' +
+    // The shifter's body runs on below the edge, with the H-gate's slots.
+    '<rect x="18" y="4" width="124" height="190" rx="38" fill="#1A2029" stroke="#3A4250" stroke-width="2"></rect>' +
+    '<rect x="32" y="12" width="96" height="70" rx="12" fill="#262D38" stroke="#3A4250" stroke-width="1.5"></rect>' +
+    '<path d="M56 124 V138 M80 124 V138 M104 124 V138 M56 131 H104" stroke="#3A4250" stroke-width="3" stroke-linecap="round"></path>';
+  Object.keys(SHIFTER_BUTTONS).forEach(function (name) {
+    var b = SHIFTER_BUTTONS[name];
+    if (name === c.button) return;
+    s += '<circle cx="' + b[0] + '" cy="' + b[1] + '" r="8" fill="' + (b[1] > 90 ? '#5A2626' : '#4A525E') + '"></circle>';
+  });
+  var labelY = Math.max(10, Math.min(52, ty - 22));
+  var chipW = 28 + c.label.length * 11.5;
+  // Straight out to the right, or under the row when buttons are in the way.
+  var blocked = Object.keys(SHIFTER_BUTTONS).some(function (name) {
+    var b = SHIFTER_BUTTONS[name];
+    return name !== c.button && Math.abs(b[1] - ty) < 10 && b[0] > tx;
+  });
+  var leader = blocked ? 'M' + tx + ' ' + (ty + 14) + ' V' + (ty + 18) + ' H150 ' : 'M' + (tx + 14) + ' ' + ty + ' H150 ';
+  s += '<path d="' + leader + 'L172 ' + (labelY + 18) + ' H186" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"></path>';
+  if (hold) {
+    s += '<circle class="c-held" cx="' + tx + '" cy="' + ty + '" r="9" fill="var(--accent)" stroke="#E8EAED" stroke-width="2"></circle>' +
+      '<circle class="c-hold" cx="' + tx + '" cy="' + ty + '" r="16" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 ' + tx + ' ' + ty + ')"></circle>';
+  } else {
+    s += '<circle class="c-ripple" cx="' + tx + '" cy="' + ty + '" r="10" stroke="var(--accent)" stroke-width="3"></circle>' +
+      '<circle class="c-tap" cx="' + tx + '" cy="' + ty + '" r="9" fill="var(--accent)" stroke="#E8EAED" stroke-width="2"></circle>';
+  }
+  s += '<rect x="186" y="' + labelY + '" width="' + chipW + '" height="36" rx="8" stroke="var(--accent)" stroke-width="2.5"></rect>' +
+    '<text x="' + (186 + chipW / 2) + '" y="' + (labelY + 26) + '" text-anchor="middle" font-family="Barlow Semi Condensed, sans-serif" font-size="21" font-weight="700" fill="var(--accent)">' + esc(c.label) + '</text>' +
+    '<text x="188" y="' + (labelY + 58) + '" font-family="Barlow, sans-serif" font-size="15" font-weight="700" letter-spacing="1.2" fill="#E8EAED">' + (hold ? 'HOLD 1 SECOND' : 'PRESS ONCE') + '</text>' +
+    '<text x="188" y="' + (labelY + 78) + '" font-family="Barlow, sans-serif" font-size="15" fill="#9AA3AE">top of the shifter</text>' +
+    '</svg>';
+  return s;
+}
+
 // The tip panel, drawn only when the tip changes so its animations run on.
+// It grows to TIP_HEIGHT while a tip shows, and the dashboard above compacts.
+var TIP_HEIGHT = 420;
 function renderTip(p) {
   var accent = p.accent;
   if (!p.showTip) {
-    return '<section aria-label="Manual tip" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; border: 2px dashed #262D38; display: flex; align-items: center; justify-content: center">' +
-      '<span style="font-size: 22px; color: #9AA3AE">No tip right now. Tips appear here when they are useful.</span></section>';
+    var idle = '<section aria-label="Manual tip" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; border: 2px dashed ' + (p.level ? '#2B3A52' : '#262D38') + '; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center">';
+    if (!p.level) {
+      return idle + '<span style="font-size: 22px; color: #9AA3AE">Context-aware manual is off. Press B, E or P to start it.</span></section>';
+    }
+    var dots = '';
+    var progress = p.tipProgress || [0, 0];
+    for (var i = 0; i < progress[1]; i++) {
+      dots += '<span style="width: 12px; height: 12px; border-radius: 50%; ' + (i < progress[0] ? 'background: ' + accent : 'border: 2px solid #3A4250; box-sizing: border-box') + '"></span>';
+    }
+    return idle + '<span style="font-size: 22px; color: #C9D0D8">Tips appear here at a calm moment, when they are useful.</span>' +
+      '<div style="display: flex; align-items: center; gap: 14px">' +
+      (dots ? '<div style="display: flex; gap: 6px">' + dots + '</div>' : '') +
+      '<span style="font-size: 17px; color: #7F8995">' + esc(p.contextStatus || '') + '</span></div></section>';
   }
   var tip = p.tip || SAMPLE_TIPS[p.level] || SAMPLE_TIPS.Experienced;
-  var right;
-  if (tip.gesture && GESTURES[tip.gesture]) {
-    right = '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">WHAT TO DO</span>' +
-      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center">' + GESTURES[tip.gesture] + '</div>' +
-      '<span style="font-size: 19px; font-weight: 600; text-align: center; color: #E8EAED">' + esc(tip.action || '') + '</span>';
+  // What to do comes first, drawn large on the left; the explanation follows.
+  var heading = '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">WHAT TO DO</span>';
+  var actionLine = '<span style="font-size: 26px; font-weight: 600; text-align: center; color: #E8EAED">' + esc(tip.action || '') + '</span>';
+  var visual;
+  if (tip.complete) {
+    visual = heading +
+      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; gap: 28px">' +
+      '<svg width="160" height="160" viewBox="0 0 84 84" fill="none" aria-hidden="true"><circle cx="42" cy="42" r="38" fill="#12301F" stroke="#3DD68C" stroke-width="3"></circle>' +
+      '<path class="d-tick" d="M25 43 L37 55 L60 30" stroke="#3DD68C" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path></svg>' +
+      '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 72px; font-weight: 700; color: #3DD68C">Done</span></div>';
+  } else if (tip.control) {
+    visual = heading +
+      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center"><div style="zoom: 2">' + controlSvg(tip.control) + '</div></div>' +
+      actionLine;
+  } else if (tip.gesture && GESTURES[tip.gesture]) {
+    visual = heading +
+      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center"><div style="zoom: 2">' + GESTURES[tip.gesture] + '</div></div>' +
+      actionLine;
   } else {
-    right = '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">CONTROL</span>' +
-      '<div style="display: flex; align-items: center; gap: 16px">' +
-      '<span style="min-width: 96px; height: 64px; box-sizing: border-box; padding: 0 18px; display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 2px solid ' + accent + '; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 30px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>' +
-      '<span style="font-size: 18px; line-height: 1.3; color: #C9D0D8">On the G25:<br>' + esc(tip.input) + '</span>' +
+    visual = '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: #9AA3AE">CONTROL</span>' +
+      '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; gap: 24px">' +
+      '<span style="min-width: 140px; height: 96px; box-sizing: border-box; padding: 0 26px; display: flex; align-items: center; justify-content: center; border-radius: 16px; border: 3px solid ' + accent + '; font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 46px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>' +
+      '<span style="font-size: 24px; line-height: 1.3; color: #C9D0D8">On the G25:<br>' + esc(tip.input) + '</span>' +
       '</div>';
   }
-  return '<section aria-label="Manual tip" class="tip-in" style="height: 236px; flex-shrink: 0; box-sizing: border-box; padding: 26px 32px; border-radius: 20px; background: #141920; border: 2px solid #2B3A52; display: flex; gap: 40px">' +
-    '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px">' +
+  return '<section aria-label="Manual tip" class="tip-in" style="height: ' + TIP_HEIGHT + 'px; flex-shrink: 0; box-sizing: border-box; padding: 28px 36px; border-radius: 20px; background: #141920; border: 2px solid #2B3A52; display: flex; gap: 44px">' +
+    '<div style="width: 700px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; padding-right: 44px; border-right: 1px solid #262D38">' +
+    visual + '</div>' +
+    '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 16px">' +
     '<div style="display: flex; align-items: center; gap: 12px">' +
-    '<span style="font-size: 15px; font-weight: 700; letter-spacing: 0.08em; color: ' + accent + '">MANUAL TIP</span>' +
-    '<span style="font-size: 15px; color: #9AA3AE">for ' + esc(p.level) + ' drivers</span></div>' +
-    '<h3 style="margin: 0; font-size: 34px; font-weight: 600; line-height: 1.15">' + esc(tip.title) + '</h3>' +
-    '<p style="margin: 0; max-width: 980px; font-size: 22px; line-height: 1.4; color: #C9D0D8">' + esc(tip.body) + '</p>' +
-    '<span style="font-size: 17px; color: #9AA3AE">' + esc(tip.why) + '</span></div>' +
-    '<div style="width: 400px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding-left: 40px; border-left: 1px solid #262D38">' +
-    right + '</div></section>';
+    '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: ' + (tip.complete ? '#3DD68C' : accent) + '">' + (tip.complete ? 'NICE ONE' : 'MANUAL TIP') + '</span>' +
+    '<span style="font-size: 17px; color: #9AA3AE">for ' + esc(p.level) + ' drivers</span></div>' +
+    '<h3 style="margin: 0; font-size: 46px; font-weight: 600; line-height: 1.12">' + esc(tip.title) + '</h3>' +
+    '<p style="margin: 0; font-size: 27px; line-height: 1.4; color: #C9D0D8">' + esc(tip.body) + '</p>' +
+    '<span style="font-size: 19px; color: #9AA3AE">' + esc(tip.why) + '</span></div></section>';
 }
 
 // Chimes, made with Web Audio so there is no sound file; the browser is
@@ -405,6 +546,8 @@ function renderTip(p) {
 // autopilot's are three notes to ACC's two, so they are told apart unseen.
 var CHIMES = {
   tip: { wave: 'sine', volume: 0.16, notes: [[659.25, 0, 1.3], [987.77, 0.16, 1.3]] },
+  // A tip done: a quick bright rise, shorter than the tip's own.
+  tipDone: { wave: 'sine', volume: 0.14, notes: [[783.99, 0, 0.35], [1046.5, 0.09, 0.35], [1318.5, 0.18, 0.8]] },
   accOn: { wave: 'triangle', volume: 0.2, notes: [[587.33, 0, 0.5], [880.0, 0.12, 0.7]] },
   accOff: { wave: 'triangle', volume: 0.2, notes: [[880.0, 0, 0.5], [587.33, 0.12, 0.7]] },
   autopilotOn: { wave: 'sine', volume: 0.18, notes: [[523.25, 0, 0.9], [659.25, 0.11, 0.9], [783.99, 0.22, 0.9], [1046.5, 0.33, 1.4]] },
@@ -518,12 +661,15 @@ function draw() {
   updateHum();
   if (state.activeAssist === 'Autopilot' && !autopilotSince) autopilotSince = Date.now();
   if (state.activeAssist !== 'Autopilot') autopilotSince = 0;
+  if (state.level && !contextSince) contextSince = Date.now();
+  if (!state.level) contextSince = 0;
   frame.style.setProperty('--accent', state.accent);
-  var tipKey = state.showTip ? JSON.stringify([state.tip, state.level]) : '';
+  var tipKey = state.showTip ? JSON.stringify([state.tip, state.level])
+    : 'idle' + JSON.stringify([state.level, state.contextStatus, state.tipProgress]);
   if (tipKey !== shownTip) {
-    if (tipKey) {
+    if (state.showTip) {
       tipShownAt = Date.now();
-      chime('tip');
+      chime(state.tip && state.tip.complete ? 'tipDone' : 'tip');
     }
     tipSlot.innerHTML = renderTip(state);
     shownTip = tipKey;

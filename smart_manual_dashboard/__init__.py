@@ -309,12 +309,19 @@ def _demo():
     dashboard = Dashboard(args.port).start(args.monitor, open_window=not args.no_window)
     print('Serving %s, Ctrl+C to stop' % dashboard.url)
     try:
+        # The Beginner tips: steady at about 50 km/h, with a junction coming
+        # up for 8 s of every 40 that holds the first one back.
         t0 = time.time()
         tips = Tips()
+        tips.start('Beginner')
         while True:
             t = time.time() - t0
-            speed = 65 + 60 * math.sin(t / 3.0)
-            dashboard.update(speed=int(round(speed)), **tips.update(speed))
+            speed = 50 + 1.5 * math.sin(t / 3.0)
+            state = dict(activeAssist='None', gear='D', brake=0)
+            context = dict(speed=speed, yaw_rate=0.0, cars_near=0, walkers_near=0,
+                           junction_ahead=20.0 if t % 40 > 32 else None, indicating=False)
+            state.update(tips.update(state, context))
+            dashboard.update(speed=int(round(speed)), **state)
             time.sleep(1.0 / 60)
     except KeyboardInterrupt:
         pass

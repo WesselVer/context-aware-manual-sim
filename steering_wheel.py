@@ -4,7 +4,7 @@ Reads steering, throttle, brake and clutch from the wheel through pygame and
 drives its force feedback through SDL's haptic API, called with ctypes on the
 SDL2 library pygame itself loaded (pygame does not expose haptics).
 
-Steering goes through a steering ratio (STEER_RATIO, 10:1 by default): the
+Steering goes through a steering ratio (STEER_RATIO, 9:1 by default): the
 900-degree wheel turns the front wheels 45 degrees each way, instead of
 CARLA's full 70 at a quarter turn. Real sedans are about 15:1, which feels
 sluggish without a car's motion around you.
@@ -62,14 +62,20 @@ PADDLE_RIGHT = 4
 WHEEL_BUTTON_LEFT = 7
 WHEEL_BUTTON_RIGHT = 6
 
+# The shifter unit's d-pad is the joystick's hat 0; pressed() reports its
+# up and down as these two buttons.
+DPAD_UP = 'dpad-up'
+DPAD_DOWN = 'dpad-down'
+
 # Cruise-control buttons, as measured on the G25. A long press of on/off
-# turns on adaptive cruise; gap - and + set its following distance.
+# turns on adaptive cruise; gap - and + set its following distance, on the
+# d-pad: up closes the gap to the car ahead, down opens it.
 CRUISE_ON_OFF = 15
 CRUISE_DOWN = 16
 CRUISE_RESUME = 17
 CRUISE_UP = 18
-GAP_DOWN = 1
-GAP_UP = 2
+GAP_DOWN = DPAD_UP
+GAP_UP = DPAD_DOWN
 AUTOPILOT_BUTTON = 0
 
 # Pedals travel too little near the ends to reach the extremes reliably.
@@ -78,8 +84,8 @@ PEDAL_DEADZONE = 0.03
 # Lock-to-lock rotation of the wheel, as set in G HUB.
 WHEEL_RANGE = 900.0
 # Degrees of wheel per degree of front-wheel angle; picked by driving it
-# (a real sedan is about 15).
-STEER_RATIO = 10.0
+# (a real sedan is about 15; 10 still felt a little slow).
+STEER_RATIO = 9.0
 
 # CARLA's default steering curve: the share of the steer that reaches the
 # wheels at a speed (km/h). It works like a variable ratio on top of ours.
@@ -397,9 +403,16 @@ class SteeringWheel(object):
         return 'N' if self._shifter_used else None
 
     def pressed(self):
-        """Buttons pressed since the last call; call it once a frame."""
+        """Buttons pressed since the last call, the d-pad's DPAD_UP and DPAD_DOWN
+        among them; call it once a frame."""
         down = set(b for b in range(self.joystick.get_numbuttons())
                    if self.joystick.get_button(b))
+        if self.joystick.get_numhats():
+            hat_y = self.joystick.get_hat(0)[1]
+            if hat_y > 0:
+                down.add(DPAD_UP)
+            elif hat_y < 0:
+                down.add(DPAD_DOWN)
         new = down - self._buttons_down
         self._buttons_down = down
         return new

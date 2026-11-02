@@ -25,10 +25,10 @@ working beside it. --wheel picks another wheel by name, --no-wheel ignores it.
 CARLA has no clutch, so pressing it disengages the throttle. The H-shifter is
 an automatic's selector: 1st P, 3rd D, 4th R, anywhere else N.
 
-Drive modes Eco, Normal (the default) and Sport shape the throttle; the left
+Drive modes Eco, Normal (the default) and Dynamic shape the throttle; the left
 paddle steps down, the right one up. Eco also makes the wheel's force
 feedback 40% lighter. Each mode sets the regenerative braking
-(Eco Maximum, Normal Low, Sport Off), which the wheel's top buttons then
+(Eco Maximum, Normal Low, Dynamic Off), which the wheel's top buttons then
 adjust: left down, right up. CARLA has no regen, so it is brake applied on
 lift-off. The dashboard shows the mode, regen, throttle and brake.
 
@@ -40,16 +40,20 @@ leaving D cancels it; the throttle overrides it while pressed.
 
 Adaptive cruise control (ACC) is a long press of on/off, from 20 km/h like
 plain cruise. It speeds up to 30 km/h, or keeps the current speed when that
-is faster, follows the car ahead in your lane at the time gap set with gap - and +
+is faster, follows the car ahead in your lane at the time gap set on the d-pad
+(up shorter, down longer)
 (1.0, 1.5, 2.0 or 2.5 s; 1.5 s to start), and brakes, down to a stop. After
 more than 3 s stopped it waits for resume or the throttle. The same +, -,
 resume and cancels apply.
 
 Autopilot (the wheel's autopilot button, or K) drives the car around the map
 on CARLA's Traffic Manager, slowly (30 km/h to start) and in Eco; the wheel
-turns with the car. + and - change its speed, gap - and + its following
+turns with the car. + and - change its speed, d-pad up and down its following
 distance. Braking, leaving D, or turning the wheel against it (it resists
-at first) hands the car back, in the drive mode it had before.
+at first) hands the car back, in the drive mode it had before. The
+accelerator overrides it while held: the car speeds up, by up to 40 km/h at
+full throttle, and the autopilot keeps steering, coming back to its own
+speed once the pedal is released.
 
 The context-aware manual (smart_manual_dashboard/tips.py) is off when the
 drive starts. B, E or P starts it for a Beginner, Experienced or Expert
@@ -273,12 +277,12 @@ DRIVER_EYES = [
 # Drive modes the paddles step through: the throttle response, the regen
 # level the mode starts with, and the force-feedback strength. Eco caps the
 # throttle at 60% with a soft start and lightens the wheel by 40%, so the
-# switch is felt; Sport answers early in the pedal's travel.
+# switch is felt; Dynamic answers early in the pedal's travel.
 DriveMode = collections.namedtuple('DriveMode', 'name throttle regen ffb')
 DRIVE_MODES = [
     DriveMode('Eco', lambda pedal: 0.6 * pedal ** 1.6, 3, 0.6),
     DriveMode('Normal', lambda pedal: pedal, 1, 1.0),
-    DriveMode('Sport', lambda pedal: pedal ** 0.7, 0, 1.0),
+    DriveMode('Dynamic', lambda pedal: pedal ** 0.7, 0, 1.0),
 ]
 DEFAULT_DRIVE_MODE = 1
 
@@ -325,6 +329,10 @@ AUTOPILOT_DRIVE_MODE = 0
 AUTOPILOT_BRAKE = 0.1
 AUTOPILOT_TAKEOVER_DEG = 40.0
 AUTOPILOT_TAKEOVER_SECONDS = 0.25
+# The accelerator past AUTOPILOT_OVERRIDE_PEDAL overrides the autopilot's
+# speed, adding up to AUTOPILOT_OVERRIDE_KMH at full throttle.
+AUTOPILOT_OVERRIDE_PEDAL = 0.05
+AUTOPILOT_OVERRIDE_KMH = 40
 
 # The context-aware manual: held this long, R turns it off. Its view of the
 # world: vehicles within CONTEXT_NEAR_M and pedestrians within
@@ -862,6 +870,8 @@ class KeyboardControl(object):
         self._ap_pull_deg = 0.0
         # The control the Traffic Manager last applied, for the dashboard.
         self._ap_control = None
+        # The speed the Traffic Manager was last given, with any override.
+        self._ap_tm_speed = None
         # When on/off went down, and whether its long press has acted yet.
         self._on_off_down = None
         self._on_off_long = False
@@ -1235,6 +1245,7 @@ class KeyboardControl(object):
         """The Traffic Manager's speed and following distance for the ego car."""
         tm = world.traffic_manager
         tm.set_desired_speed(world.player, float(self._ap_speed))
+        self._ap_tm_speed = self._ap_speed
         tm.distance_to_leading_vehicle(world.player, self._ap_distance)
         tm.auto_lane_change(world.player, True)
 
@@ -1285,6 +1296,15 @@ class KeyboardControl(object):
         if selected is not None and selected != 'D':
             self._set_autopilot(world, False, 'shifted to %s' % selected)
             return
+        # The accelerator speeds it up while held, as when merging; it keeps
+        # steering and comes back to its own speed after.
+        self._cruise_override = throttle > AUTOPILOT_OVERRIDE_PEDAL
+        target = self._ap_speed
+        if self._cruise_override:
+            target += int(round(AUTOPILOT_OVERRIDE_KMH * throttle))
+        if target != self._ap_tm_speed:
+            world.traffic_manager.set_desired_speed(world.player, float(target))
+            self._ap_tm_speed = target
         # Turned against it: the wheel lagging the car's steering comes back
         # towards it, a hand holding it does not.
         pull = abs(self._wheel.deviation(world.player, self._ap_control.steer))
@@ -2181,8 +2201,8 @@ def main():
         '--no-wheel', action='store_const', const=None, dest='wheel',
         help='ignore any steering wheel')
     argparser.add_argument(
-        '--steer-ratio', metavar='R', default=10.0, type=float,
-        help='degrees of wheel per degree of front-wheel angle (default: 10)')
+        '--steer-ratio', metavar='R', default=9.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 9)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')

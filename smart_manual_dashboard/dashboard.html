@@ -21,12 +21,13 @@
   panel says what the manual is waiting for (contextStatus, tipProgress).
 
   A tip (showTip + tip) slides in with a chime, outlines the zones it names
-  in tip.highlight, and draws either tip.control, the G25 shifter button to
-  tap or hold, or tip.gesture, the movement the driver makes. Once the driver
+  in tip.highlight, and draws either tip.control, the G25 button (or buttons)
+  to tap or hold on the shifter or the wheel, or tip.gesture, the movement the driver makes. Once the driver
   has done it, tip.complete shows it done, with a chime of its own.
   Zones: speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen.
-  Buttons: cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, gap-minus, gap-plus.
-  Gestures: release-throttle, press-brake.
+  Shifter buttons: cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, dpad-up (gap -), dpad-down (gap +).
+  Wheel (tip.control.device = 'wheel'): paddle-left, paddle-right, regen-down, regen-up.
+  Gestures: release-throttle, press-brake, press-throttle.
 -->
 <style>
 @font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
@@ -129,7 +130,7 @@ var DEFAULTS = {
   driverPedal: 0,         // %
   brake: 0,               // %
   gear: 'D',              // P | R | N | D
-  driveMode: 'Normal',    // Eco | Normal | Sport
+  driveMode: 'Normal',    // Eco | Normal | Dynamic
   regenLevel: 1,          // 0..3: Off | Low | Medium | Maximum
   showTip: false,
   tip: null,              // {title, body, why, highlight, control | gesture, action, complete}; null uses the level's sample tip
@@ -289,6 +290,12 @@ function render(p) {
     var bg = n <= gap ? (assist === 'ACC' ? accent : '#7F8995') : '#262D38';
     bars += '<span style="display: block; height: 5px; border-radius: 3px; width: ' + (24 + (5 - n) * 14) + 'px; background: ' + bg + '"></span>';
   });
+  // Compact, the same picture turned sideways: your car, the gap, the car ahead.
+  var barsRow = '';
+  [1, 2, 3, 4].forEach(function (n) {
+    var bg = n <= gap ? (assist === 'ACC' ? accent : '#7F8995') : '#262D38';
+    barsRow += '<span style="display: block; width: 5px; border-radius: 3px; height: ' + (10 + (5 - n) * 4) + 'px; background: ' + bg + '"></span>';
+  });
   // The car ahead, drawn above the gap bars when ACC has one.
   var leadCar = '<svg width="34" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? accent : 'transparent') + '" stroke-width="2.5" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
   var leadText = p.accWaiting && assist === 'ACC' ? 'Stopped · press RES to go'
@@ -299,7 +306,12 @@ function render(p) {
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(56, 38) + 'px; font-weight: 600; line-height: 1; color: ' + acc.value + '">' + esc(accSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #9AA3AE">km/h</span></div>' +
     '<div style="display: flex; align-items: center; gap: 14px">' +
-    (compact ? '' : '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + leadCar + bars +
+    (compact ? '<div style="display: flex; align-items: center; gap: 5px">' +
+      '<svg width="26" height="17" viewBox="0 0 40 26" fill="none" stroke="#C9D0D8" stroke-width="2.5" style="transform: rotate(90deg); margin: 0 2px" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="10" x2="28" y2="10"></line></svg>' +
+      barsRow +
+      '<svg width="26" height="17" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? accent : 'transparent') + '" stroke-width="2.5" style="transform: rotate(90deg); margin: 0 2px" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>' +
+      '</div>'
+    : '<div style="display: flex; flex-direction: column; align-items: center; gap: 4px">' + leadCar + bars +
     '<svg width="40" height="26" viewBox="0 0 40 26" fill="none" stroke="#C9D0D8" stroke-width="2" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="10" x2="28" y2="10"></line></svg>' +
     '</div>') +
     '<div style="display: flex; flex-direction: column; gap: 2px">' +
@@ -371,7 +383,7 @@ function render(p) {
     '<div' + zoneAttr(p, 'driveMode') + 'flex-grow: 1; box-sizing: border-box; padding: ' + z(22, 12) + 'px; border-radius: 16px; border: 2px solid #262D38; background: #141920; display: flex; flex-direction: column; justify-content: space-between">' + zoneTag(p, 'driveMode') +
     '<span style="font-size: 24px; font-weight: 600">Drive mode</span>' +
     '<div style="display: flex; gap: 6px; padding: 6px; border-radius: 12px; background: #0B0E13">';
-  ['Eco', 'Normal', 'Sport'].forEach(function (m) {
+  ['Eco', 'Normal', 'Dynamic'].forEach(function (m) {
     var on = m === p.driveMode;
     h += '<span style="flex-grow: 1; flex-basis: 0; text-align: center; padding: ' + z('14px 0', '8px 0') + '; border-radius: 8px; font-size: 22px; font-weight: 600; background: ' + (on ? accent : 'transparent') + '; color: ' + (on ? '#0B0E13' : '#9AA3AE') + '">' + m + '</span>';
   });
@@ -433,51 +445,96 @@ var GESTURES = {
     '</g></svg>'
 };
 
-// The G25 shifter unit's buttons, as the reference sheet places them: the
-// cruise cluster in the silver panel (on/off at the top, -5 left, +5 right,
-// resume below) and the red row (autopilot, gap -, gap +, unused).
-var SHIFTER_BUTTONS = {
-  'cc-onoff': [80, 28], 'cc-minus': [60, 46], 'cc-plus': [100, 46], 'cc-resume': [80, 64],
-  'autopilot': [44, 102], 'gap-minus': [68, 102], 'gap-plus': [92, 102], 'red-4': [116, 102]
+// press-throttle: the same foot on the accelerator, in the accent colour.
+GESTURES['press-throttle'] = GESTURES['press-brake'].replace('>BRAKE<', '>ACCELERATOR<')
+  .split('#F5A524').join('var(--accent)');
+
+// The G25's controls a tip can point at, on a drawing of the part they are
+// on. Each button is {x, y}, red for the red ones, r its radius when it is
+// not the usual 9, and a = the angle of a paddle (drawn as a bar).
+var DEVICES = {
+  // The shifter unit, as the reference sheet places its buttons: the cruise
+  // cluster in the silver panel (on/off at the top, -5 left, +5 right,
+  // resume below), the d-pad (up gap -, down gap +) and the red row
+  // (autopilot first). Its body runs on below the edge, with the H-gate.
+  shifter: {
+    where: 'top of the shifter',
+    base: '<rect x="18" y="4" width="124" height="190" rx="38" fill="#1A2029" stroke="#3A4250" stroke-width="2"></rect>' +
+      '<rect x="32" y="12" width="96" height="70" rx="12" fill="#262D38" stroke="#3A4250" stroke-width="1.5"></rect>' +
+      '<path d="M80 86 V112 M67 99 H93" stroke="#262D38" stroke-width="11" stroke-linecap="round"></path>' +
+      '<path d="M56 144 V148 M80 144 V148 M104 144 V148" stroke="#3A4250" stroke-width="3" stroke-linecap="round"></path>',
+    buttons: {
+      'cc-onoff': { x: 80, y: 28 }, 'cc-minus': { x: 60, y: 46 }, 'cc-plus': { x: 100, y: 46 }, 'cc-resume': { x: 80, y: 64 },
+      'dpad-up': { x: 80, y: 90, r: 5 }, 'dpad-down': { x: 80, y: 108, r: 5 },
+      'autopilot': { x: 44, y: 124, red: true }, 'red-2': { x: 68, y: 124, red: true },
+      'red-3': { x: 92, y: 124, red: true }, 'red-4': { x: 116, y: 124, red: true }
+    }
+  },
+  // The wheel from the driver's seat: the paddles behind its rim at ten and
+  // two (drive mode down and up), the red buttons on its spokes (regen).
+  wheel: {
+    where: 'on the steering wheel',
+    base: '<path d="M62 80 H28 M98 80 H132 M80 96 V128" stroke="#262D38" stroke-width="16" stroke-linecap="round"></path>' +
+      '<circle cx="80" cy="74" r="54" stroke="#3A4250" stroke-width="11"></circle>' +
+      '<circle cx="80" cy="78" r="19" fill="#2A313C" stroke="#3A4250" stroke-width="2"></circle>' +
+      '<circle cx="80" cy="78" r="5" fill="#4A525E"></circle>',
+    buttons: {
+      'paddle-left': { x: 37, y: 27, a: -42 }, 'paddle-right': { x: 123, y: 27, a: 42 },
+      'regen-down': { x: 46, y: 80, red: true }, 'regen-up': { x: 114, y: 80, red: true }
+    }
+  }
 };
 
-// A control tip's drawing: the top of the shifter with the button to use
-// lit, pressing in (tap) or held while a ring fills (hold), and a leader
-// line out to its label.
+// A button's shape, with a class and attributes of its own.
+function buttonShape(b, cls, attrs) {
+  cls = cls ? ' class="' + cls + '"' : '';
+  if (b.a !== undefined) {
+    return '<g transform="rotate(' + b.a + ' ' + b.x + ' ' + b.y + ')"><rect' + cls + ' x="' + (b.x - 18) + '" y="' + (b.y - 7) + '" width="36" height="14" rx="6" ' + attrs + '></rect></g>';
+  }
+  return '<circle' + cls + ' cx="' + b.x + '" cy="' + b.y + '" r="' + (b.r || 9) + '" ' + attrs + '></circle>';
+}
+
+// A control tip's drawing: the part with the button or buttons to use lit,
+// pressing in (tap) or held while a ring fills (hold), and a leader line out
+// to its label.
 function controlSvg(c) {
-  var target = SHIFTER_BUTTONS[c.button] || SHIFTER_BUTTONS['cc-onoff'];
+  var device = DEVICES[c.device] || DEVICES.shifter;
+  var names = [].concat(c.button).filter(function (n) { return device.buttons[n]; });
+  if (!names.length) names = [Object.keys(device.buttons)[0]];
   var hold = c.press === 'hold';
-  var tx = target[0], ty = target[1];
-  var s = '<svg width="320" height="134" viewBox="0 0 330 138" fill="none" aria-hidden="true">' +
-    // The shifter's body runs on below the edge, with the H-gate's slots.
-    '<rect x="18" y="4" width="124" height="190" rx="38" fill="#1A2029" stroke="#3A4250" stroke-width="2"></rect>' +
-    '<rect x="32" y="12" width="96" height="70" rx="12" fill="#262D38" stroke="#3A4250" stroke-width="1.5"></rect>' +
-    '<path d="M56 124 V138 M80 124 V138 M104 124 V138 M56 131 H104" stroke="#3A4250" stroke-width="3" stroke-linecap="round"></path>';
-  Object.keys(SHIFTER_BUTTONS).forEach(function (name) {
-    var b = SHIFTER_BUTTONS[name];
-    if (name === c.button) return;
-    s += '<circle cx="' + b[0] + '" cy="' + b[1] + '" r="8" fill="' + (b[1] > 90 ? '#5A2626' : '#4A525E') + '"></circle>';
+  var s = '<svg width="320" height="142" viewBox="0 0 330 146" fill="none" aria-hidden="true">' + device.base;
+  Object.keys(device.buttons).forEach(function (name) {
+    var b = device.buttons[name];
+    if (names.indexOf(name) < 0) s += buttonShape(b, '', 'fill="' + (b.red ? '#5A2626' : '#4A525E') + '"');
   });
+  // The leader starts from the rightmost lit button.
+  var lead = names.map(function (n) { return device.buttons[n]; })
+    .reduce(function (a, b) { return b.x > a.x ? b : a; });
+  var tx = lead.x, ty = lead.y;
   var labelY = Math.max(10, Math.min(52, ty - 22));
   var chipW = 28 + c.label.length * 11.5;
   // Straight out to the right, or under the row when buttons are in the way.
-  var blocked = Object.keys(SHIFTER_BUTTONS).some(function (name) {
-    var b = SHIFTER_BUTTONS[name];
-    return name !== c.button && Math.abs(b[1] - ty) < 10 && b[0] > tx;
+  var blocked = Object.keys(device.buttons).some(function (name) {
+    var b = device.buttons[name];
+    return names.indexOf(name) < 0 && Math.abs(b.y - ty) < 10 && b.x > tx;
   });
-  var leader = blocked ? 'M' + tx + ' ' + (ty + 14) + ' V' + (ty + 18) + ' H150 ' : 'M' + (tx + 14) + ' ' + ty + ' H150 ';
+  var leader = blocked ? 'M' + tx + ' ' + (ty + 12) + ' V' + (ty + 16) + ' H150 '
+    : 'M' + (tx + (lead.a !== undefined ? 20 : 14)) + ' ' + ty + ' H150 ';
   s += '<path d="' + leader + 'L172 ' + (labelY + 18) + ' H186" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"></path>';
-  if (hold) {
-    s += '<circle class="c-held" cx="' + tx + '" cy="' + ty + '" r="9" fill="var(--accent)" stroke="#E8EAED" stroke-width="2"></circle>' +
-      '<circle class="c-hold" cx="' + tx + '" cy="' + ty + '" r="16" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 ' + tx + ' ' + ty + ')"></circle>';
-  } else {
-    s += '<circle class="c-ripple" cx="' + tx + '" cy="' + ty + '" r="10" stroke="var(--accent)" stroke-width="3"></circle>' +
-      '<circle class="c-tap" cx="' + tx + '" cy="' + ty + '" r="9" fill="var(--accent)" stroke="#E8EAED" stroke-width="2"></circle>';
-  }
+  names.forEach(function (n) {
+    var b = device.buttons[n];
+    if (hold) {
+      s += buttonShape(b, 'c-held', 'fill="var(--accent)" stroke="#E8EAED" stroke-width="2"') +
+        '<circle class="c-hold" cx="' + b.x + '" cy="' + b.y + '" r="16" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 ' + b.x + ' ' + b.y + ')"></circle>';
+    } else {
+      s += buttonShape(b, 'c-ripple', 'stroke="var(--accent)" stroke-width="3"') +
+        buttonShape(b, 'c-tap', 'fill="var(--accent)" stroke="#E8EAED" stroke-width="2"');
+    }
+  });
   s += '<rect x="186" y="' + labelY + '" width="' + chipW + '" height="36" rx="8" stroke="var(--accent)" stroke-width="2.5"></rect>' +
     '<text x="' + (186 + chipW / 2) + '" y="' + (labelY + 26) + '" text-anchor="middle" font-family="Barlow Semi Condensed, sans-serif" font-size="21" font-weight="700" fill="var(--accent)">' + esc(c.label) + '</text>' +
-    '<text x="188" y="' + (labelY + 58) + '" font-family="Barlow, sans-serif" font-size="15" font-weight="700" letter-spacing="1.2" fill="#E8EAED">' + (hold ? 'HOLD 1 SECOND' : 'PRESS ONCE') + '</text>' +
-    '<text x="188" y="' + (labelY + 78) + '" font-family="Barlow, sans-serif" font-size="15" fill="#9AA3AE">top of the shifter</text>' +
+    '<text x="188" y="' + (labelY + 58) + '" font-family="Barlow, sans-serif" font-size="15" font-weight="700" letter-spacing="1.2" fill="#E8EAED">' + esc(c.hint || (hold ? 'HOLD 1 SECOND' : 'PRESS ONCE')) + '</text>' +
+    '<text x="188" y="' + (labelY + 78) + '" font-family="Barlow, sans-serif" font-size="15" fill="#9AA3AE">' + esc(c.where || device.where) + '</text>' +
     '</svg>';
   return s;
 }

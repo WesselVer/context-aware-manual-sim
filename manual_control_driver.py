@@ -61,6 +61,16 @@ driver, which the dashboard's level selector lights up; holding R for a
 second stops it. A tip only comes at a safe moment: standing still, steady
 on a straight or a quiet road, with no junction coming up, few cars around
 and no manoeuvre under way. It stays until the driver has done it.
+
+User tests: with --participant P07, the first B, E or P starts the test as
+well as the manual: a drive log in study_data/P07/
+(smart_manual_dashboard/drive_log.py) of the car, the assists, the tips, and
+CARLA's collision and lane-invasion sensors. F starts the free drive: no
+tips for --free-drive-seconds (120), or until F again, then the drive is scored (safety, lane
+keeping, speed, smoothness, features used) and the score shows as a final
+tip. --record also records the drive with CARLA's recorder. Afterwards,
+python -m smart_manual_dashboard.report P07 writes the
+participant's report.
 """
 
 """
@@ -95,6 +105,8 @@ Use ARROWS or WASD keys for control.
 
     B / E / P    : context-aware manual for a Beginner / Experienced / Expert
     hold R       : context-aware manual off
+    hold Z (5 s) : reset for the next participant (a tap is still the left blinker)
+    F            : start the scored free drive at the end of the test; again to end it
 
     V            : Select next map layer (Shift+V reverse)
     CTRL + B     : Load current selected map layer (CTRL + SHIFT + B to unload)
@@ -183,6 +195,7 @@ except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
 
 from smart_manual_dashboard import Dashboard, focus_window
+from smart_manual_dashboard.drive_log import DATA_DIR, DriveLog
 from smart_manual_dashboard.tips import Tips
 from steering_wheel import (SteeringWheel, PADDLE_LEFT, PADDLE_RIGHT,
                             WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT,
@@ -340,6 +353,8 @@ AUTOPILOT_OVERRIDE_KMH = 40
 # JUNCTION_AHEAD_SECONDS at the current speed, never less than
 # JUNCTION_AHEAD_MIN_M.
 CONTEXT_OFF_HOLD_SECONDS = 1.0
+# Holding Z this long resets everything for the next participant.
+NEXT_PARTICIPANT_HOLD_SECONDS = 5.0
 CONTEXT_NEAR_M = 30.0
 CONTEXT_WALKERS_NEAR_M = 15.0
 JUNCTION_AHEAD_SECONDS = 4.0
@@ -614,6 +629,51 @@ class DrivingContext(object):
         return None
 
 
+class StudyProbe(object):
+    """What the drive log (smart_manual_dashboard.drive_log) measures in the world.
+
+    The lateral position is the car's offset from the centre of the lane the
+    map puts it in, along the lane's right vector; the car ahead is the one
+    adaptive cruise follows (LeadFinder). The speed limit is the one CARLA
+    reads from the map's signs, or speed_limit when given: maps without
+    speed-limit signs (Town10HD) always report 30 km/h.
+    """
+
+    def __init__(self, world, speed_limit=None):
+        self._map = world.get_map()
+        self._leads = LeadFinder(world)
+        self._speed_limit = speed_limit
+
+    def measure(self, ego, indicating, brake_pedal):
+        transform = ego.get_transform()
+        here = transform.location
+        lateral = lane = None
+        junction = False
+        wp = self._map.get_waypoint(here)
+        if wp is not None:
+            off = here - wp.transform.location
+            right = wp.transform.get_right_vector()
+            lateral = off.x * right.x + off.y * right.y
+            lane = '%d:%d:%d' % (wp.road_id, wp.section_id, wp.lane_id)
+            junction = wp.is_junction
+        a = ego.get_acceleration()
+        f = transform.get_forward_vector()
+        limit = self._speed_limit or ego.get_speed_limit()
+        return dict(speed=_speed_kmh(ego), limit=limit, lateral=lateral, lane=lane,
+                    junction=junction, lead=self._leads.update(ego),
+                    a_long=a.x * f.x + a.y * f.y + a.z * f.z, steer=ego.get_control().steer,
+                    indicating=indicating, brake_pedal=brake_pedal, x=here.x, y=here.y)
+
+
+def drain_sensor_log(sensor):
+    """The entries a sensor (CollisionSensor, LaneInvasionSensor) logged since the last call."""
+    if sensor is None:
+        return []
+    fresh = sensor.log[sensor.drained:]
+    sensor.drained += len(fresh)
+    return fresh
+
+
 def _speed_kmh(vehicle):
     v = vehicle.get_velocity()
     return 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
@@ -704,7 +764,9 @@ class World(object):
                     sensor.destroy()
             car.destroy()
 
-    def restart(self):
+    def restart(self, same_car=False, new_place=False):
+        """Respawns the player: the next car (or the same_car) where it is, or
+        at a random spawn point with new_place."""
         self.player_max_speed = 1.589
         self.player_max_speed_fast = 3.713
         # Keep same camera config if the camera manager exists.
@@ -712,7 +774,8 @@ class World(object):
         cam_pos_index = self.camera_manager.transform_index if self.camera_manager is not None else 0
         if self._actor_filter is None:
             # Step to the next car in DRIVER_EYES.
-            self._driver_car_index = (self._driver_car_index + 1) % len(DRIVER_EYES)
+            if not same_car or self._driver_car_index < 0:
+                self._driver_car_index = (self._driver_car_index + 1) % len(DRIVER_EYES)
             blueprint = self.world.get_blueprint_library().find(DRIVER_EYES[self._driver_car_index][0])
         else:
             # Get a random blueprint.
@@ -737,6 +800,9 @@ class World(object):
             self.player_max_speed_fast = float(blueprint.get_attribute('speed').recommended_values[2])
 
         # Spawn the player.
+        if self.player is not None and new_place:
+            self.destroy()
+            self.player = None
         if self.player is not None:
             spawn_point = self.player.get_transform()
             spawn_point.location.z += 2.0
@@ -847,12 +913,19 @@ class World(object):
 
 class KeyboardControl(object):
     """Class that handles keyboard input."""
-    def __init__(self, world, start_in_autopilot, wheel=None, tips=None):
+    def __init__(self, world, start_in_autopilot, wheel=None, tips=None, drive_log=None, record=False):
         self._autopilot_enabled = start_in_autopilot
         self._wheel = wheel
         # The context-aware manual, and when R went down to turn it off.
         self._tips = tips
         self._r_down = None
+        # When Z went down, and whether its hold has reset the test (so its
+        # release does not also work the left blinker).
+        self._z_down = None
+        self._z_held = False
+        # The user test: its log, and whether it also runs CARLA's recorder.
+        self._drive_log = drive_log
+        self._record = record
         # --ffb-gain, which each drive mode scales.
         self._ffb_gain = wheel.ffb_gain if wheel is not None else 1.0
         self._drive_mode = DEFAULT_DRIVE_MODE
@@ -877,8 +950,10 @@ class KeyboardControl(object):
         self._on_off_long = False
         self._applied_throttle = 0.0
         self._cruise_throttle = 0.0
-        # The throttle asked for, before the drive mode shapes it.
+        # The throttle asked for, before the drive mode shapes it, and the
+        # brake asked for, before cruise control and regen add theirs.
         self.pedal = 0.0
+        self.brake_pedal = 0.0
         self._ackermann_enabled = False
         self._ackermann_reverse = 1
         if isinstance(world.player, carla.Vehicle):
@@ -899,6 +974,10 @@ class KeyboardControl(object):
         world.hud.notification("Press 'H' or '?' for help.", seconds=4.0)
 
     def parse_events(self, client, world, clock, sync_mode):
+        if (self._z_down is not None and not self._z_held and
+                time.time() - self._z_down >= NEXT_PARTICIPANT_HOLD_SECONDS):
+            self._z_held = True
+            self._next_participant(client, world)
         if isinstance(self._control, carla.VehicleControl):
             current_lights = self._lights
         for event in pygame.event.get():
@@ -907,9 +986,16 @@ class KeyboardControl(object):
             elif event.type == pygame.KEYDOWN:
                 if event.key == K_r and not pygame.key.get_mods() & (KMOD_CTRL | KMOD_SHIFT):
                     self._r_down = time.time()
+                if event.key == K_z:
+                    self._z_down = time.time()
             elif event.type == pygame.KEYUP:
                 if event.key == K_r:
                     self._r_down = None
+                if event.key == K_z:
+                    self._z_down = None
+                    if self._z_held:
+                        self._z_held = False
+                        continue
                 if self._is_quit_shortcut(event.key):
                     return True
                 elif event.key == K_BACKSPACE:
@@ -929,6 +1015,18 @@ class KeyboardControl(object):
                 elif event.key in LEVEL_KEYS and not pygame.key.get_mods() & KMOD_CTRL:
                     if self._tips is not None:
                         world.hud.notification(self._tips.start(LEVEL_KEYS[event.key]))
+                        if self._drive_log is not None:
+                            if self._drive_log.running:
+                                self._drive_log.set_level(LEVEL_KEYS[event.key])
+                            else:
+                                self._start_test(client, world, LEVEL_KEYS[event.key])
+                elif event.key == K_f:
+                    if self._drive_log is not None:
+                        message = self._drive_log.toggle_free_drive()
+                        if message and self._drive_log.free_driving and self._tips is not None:
+                            self._tips.pause()
+                        if message:
+                            world.hud.notification(message, seconds=4.0)
                 elif event.key == K_b and pygame.key.get_mods() & KMOD_SHIFT:
                     world.load_map_layer(unload=True)
                 elif event.key == K_b:
@@ -1023,12 +1121,6 @@ class KeyboardControl(object):
                         world.recording_start += 1
                     world.hud.notification("Recording start time is %d" % (world.recording_start))
                 if isinstance(self._control, carla.VehicleControl):
-                    if event.key == K_f:
-                        # Toggle ackermann controller
-                        self._ackermann_enabled = not self._ackermann_enabled
-                        world.hud.show_ackermann_info(self._ackermann_enabled)
-                        world.hud.notification("Ackermann Controller %s" %
-                                               ("Enabled" if self._ackermann_enabled else "Disabled"))
                     if event.key == K_q:
                         if not self._ackermann_enabled:
                             self._control.gear = 1 if self._control.reverse else -1
@@ -1079,6 +1171,8 @@ class KeyboardControl(object):
             self._r_down = None
             if self._tips is not None and self._tips.running:
                 world.hud.notification(self._tips.stop())
+                if self._drive_log is not None:
+                    self._drive_log.event('manual', 'off')
 
         if self._autopilot_enabled and isinstance(self._control, carla.VehicleControl):
             self._parse_autopilot(world, pygame.key.get_pressed(), clock.get_time() / 1000.0)
@@ -1117,6 +1211,45 @@ class KeyboardControl(object):
                 world.player.apply_control(self._control)
 
         self._lights = current_lights
+
+    def _next_participant(self, client, world):
+        """Hold Z: closes the test and starts over as at launch, for the next participant.
+
+        The manual goes off, the assists, drive mode and lights go back to
+        their defaults, the same car spawns at a new place, and the next
+        test logs to a new session folder.
+        """
+        if self._tips is not None:
+            self._tips.stop()
+        folder = self._drive_log.next_participant() if self._drive_log is not None else None
+        if self._record and world.recording_enabled:
+            client.stop_recorder()
+            world.recording_enabled = False
+        if not isinstance(self._control, carla.VehicleControl):
+            return
+        self._set_autopilot(world, False)
+        self._cruise = CruiseControl()
+        self._cruise_override = False
+        self._leads = None
+        self._ap_speed = AUTOPILOT_KMH
+        self._mode_before_autopilot = None
+        self._set_drive_mode(DEFAULT_DRIVE_MODE)
+        self._control = carla.VehicleControl()
+        self._key_throttle = self._steer_cache = 0.0
+        world.restart(same_car=True, new_place=True)
+        self._lights = carla.VehicleLightState.NONE
+        world.player.set_light_state(self._lights)
+        world.hud.notification('Ready for the next participant%s' % (': ' + folder if folder else ''),
+                               seconds=5.0)
+
+    def _start_test(self, client, world, level):
+        """The first level picked: a new drive log, and CARLA's recorder with --record."""
+        world.hud.notification(self._drive_log.start(level), seconds=4.0)
+        if self._record:
+            client.stop_recorder()
+            path = os.path.join(self._drive_log.folder, 'recording-%s.log' % self._drive_log.stamp)
+            client.start_recorder(path)
+            world.recording_enabled = True
 
     def _parse_vehicle_keys(self, keys, milliseconds):
         if keys[K_UP] or keys[K_w]:
@@ -1352,6 +1485,7 @@ class KeyboardControl(object):
         """Shapes the throttle for the drive mode, adds cruise control, and
         brakes for regen on lift-off."""
         self.pedal = self._control.throttle
+        self.brake_pedal = self._control.brake
         self._control.throttle = DRIVE_MODES[self._drive_mode].throttle(self.pedal)
         kmh = _speed_kmh(world.player)
         self._cruise_override = False
@@ -1666,6 +1800,9 @@ class CollisionSensor(object):
     def __init__(self, parent_actor, hud):
         self.sensor = None
         self.history = []
+        # Every collision, for the drive log (drain_sensor_log).
+        self.log = []
+        self.drained = 0
         self._parent = parent_actor
         self.hud = hud
         world = self._parent.get_world()
@@ -1694,6 +1831,7 @@ class CollisionSensor(object):
         self.history.append((event.frame, intensity))
         if len(self.history) > 4000:
             self.history.pop(0)
+        self.log.append(dict(other=actor_type, intensity=intensity))
 
 
 # ==============================================================================
@@ -1704,6 +1842,9 @@ class CollisionSensor(object):
 class LaneInvasionSensor(object):
     def __init__(self, parent_actor, hud):
         self.sensor = None
+        # Every crossing, for the drive log (drain_sensor_log).
+        self.log = []
+        self.drained = 0
 
         # If the spawn object is not a vehicle, we cannot use the Lane Invasion Sensor
         if parent_actor.type_id.startswith("vehicle."):
@@ -1725,6 +1866,7 @@ class LaneInvasionSensor(object):
         lane_types = set(x.type for x in event.crossed_lane_markings)
         text = ['%r' % str(x).split()[-1] for x in lane_types]
         self.hud.notification('Crossed line %s' % ' and '.join(text))
+        self.log.append(dict(markings=sorted(str(x).split()[-1] for x in lane_types)))
 
 
 # ==============================================================================
@@ -2035,6 +2177,10 @@ def game_loop(args):
     dashboard = None
     tips = Tips()
     wheel = None
+    participant = args.participant or time.strftime('session-%Y%m%d-%H%M%S')
+    drive_log = DriveLog(os.path.join(args.data or DATA_DIR, participant),
+                         free_seconds=args.free_drive_seconds)
+    print('Participant %s: B, E or P starts the test, F the free drive (F again ends it).' % participant)
 
     try:
         # Opened first so the browser is up, and has taken and given back the
@@ -2084,8 +2230,9 @@ def game_loop(args):
 
         hud = HUD(args.width, args.height)
         world = World(sim_world, hud, traffic_manager, args)
-        controller = KeyboardControl(world, args.autopilot, wheel, tips)
+        controller = KeyboardControl(world, args.autopilot, wheel, tips, drive_log, args.record)
         context = DrivingContext(sim_world)
+        probe = StudyProbe(sim_world, args.speed_limit)
 
         if args.sync:
             sim_world.tick()
@@ -2114,15 +2261,32 @@ def game_loop(args):
                 last_collision = collision
                 wheel.update_ffb(world.player, world.imu_sensor,
                                  controller.autopilot_enabled, clock.get_time() / 1000.0)
+            state = controller.dashboard_state()
+            state.update(tips.update(state, context.update(world.player, controller.indicating)))
+            if drive_log.running:
+                for hit in drain_sensor_log(world.collision_sensor):
+                    drive_log.event('collision', hit['other'])
+                for crossing in drain_sensor_log(world.lane_invasion_sensor):
+                    markings = [m for m in crossing['markings'] if m != 'NONE']
+                    if not markings:
+                        continue
+                    who = ('autopilot' if controller.autopilot_enabled else
+                           'signalled' if controller.indicating else 'unsignalled')
+                    drive_log.event('lane-crossing', '%s %s' % (who, '+'.join(markings)))
+                state.update(drive_log.frame(state, probe.measure(world.player, controller.indicating, controller.brake_pedal)))
+            else:
+                drain_sensor_log(world.collision_sensor)
+                drain_sensor_log(world.lane_invasion_sensor)
+                state['freeDrive'] = False
             if dashboard is not None:
-                state = controller.dashboard_state()
-                state.update(tips.update(state, context.update(world.player, controller.indicating)))
                 dashboard.update(speed=int(round(speed)), **state)
                 if refocus and dashboard.connected.is_set():
                     focus_window(pygame.display.get_wm_info().get('window'))
                     refocus = False
 
     finally:
+
+        drive_log.close()
 
         if wheel is not None:
             wheel.close()
@@ -2201,11 +2365,27 @@ def main():
         '--no-wheel', action='store_const', const=None, dest='wheel',
         help='ignore any steering wheel')
     argparser.add_argument(
-        '--steer-ratio', metavar='R', default=9.0, type=float,
-        help='degrees of wheel per degree of front-wheel angle (default: 9)')
+        '--steer-ratio', metavar='R', default=8.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 8)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')
+    argparser.add_argument(
+        '--participant', metavar='ID', default=None,
+        help='user-test participant id, the folder the drive is logged to (default: a session-<time> folder)')
+    argparser.add_argument(
+        '--data', metavar='DIR', default=None,
+        help='study data folder (default: study_data/ beside this script)')
+    argparser.add_argument(
+        '--free-drive-seconds', metavar='S', default=120.0, type=float,
+        help='longest the scored free drive F starts runs, unless F ends it sooner (default: 120)')
+    argparser.add_argument(
+        '--speed-limit', metavar='KMH', default=None, type=float,
+        help="speed limit the drive score holds the driver to (default: the map's signs; "
+             "Town10HD has none and always reports 30)")
+    argparser.add_argument(
+        '--record', action='store_true',
+        help="the test also runs CARLA's recorder, to the participant's folder")
     args = argparser.parse_args()
 
     args.width, args.height = [int(x) for x in args.res.split('x')]

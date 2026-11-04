@@ -28,6 +28,11 @@
   Shifter buttons: cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, dpad-up (gap -), dpad-down (gap +).
   Wheel (tip.control.device = 'wheel'): paddle-left, paddle-right, regen-down, regen-up.
   Gestures: release-throttle, press-brake, press-throttle.
+
+  At the end of a test (drive_log.py) the free drive shows in the empty tip
+  panel (freeDrive, with contextStatus counting down), and then the driving
+  score as a final tip: tip.score = {total, parts: [{name, score, note}]},
+  drawn as the total and a bar for each part.
 -->
 <style>
 @font-face { font-family: 'Barlow'; font-weight: 400; src: url(fonts/Barlow-Regular.woff2) format('woff2'); }
@@ -50,6 +55,9 @@ button { font: inherit; }
 }
 /* On the outline's top-right corner, where the zones have room above them. */
 .zone-tag { position: absolute; top: -24px; right: -14px; padding: 2px 10px; border-radius: 6px; font: 700 13px 'Barlow', sans-serif; letter-spacing: 0.08em; background: var(--accent); color: #FFFFFF; }
+/* The mode the next tip waits for: a quieter dashed outline, no pulse. */
+.zone-expect { position: relative; border-radius: 16px; outline: 2px dashed var(--accent); outline-offset: 8px; }
+.zone-tag-expect { background: #EAF0FD; color: var(--accent); border: 1px solid var(--accent); }
 /* The tip's arrival: slides up, its border flashes and settles. */
 .tip-in { animation: tipSlide 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), tipGlow 2.6s ease-out; }
 @keyframes tipSlide { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
@@ -118,6 +126,8 @@ var DEFAULTS = {
   level: null,            // Beginner | Experienced | Expert; null while the context-aware manual is off
   contextStatus: null,    // what the manual waits for, under an empty tip panel
   tipProgress: null,      // [tips given, tips for the level]
+  freeDrive: false,       // the free drive at the end of a test: no tips, contextStatus counts down
+  expect: null,           // zones of the mode the next tip waits for, outlined dashed: cruise, acc, autopilot
   speed: null,            // km/h; null until the first reading
   setSpeed: null,         // km/h; null when no speed is set
   throttleOverride: null, // true while the pedal overrides an assist; null works it out from the bars
@@ -184,11 +194,17 @@ var contextSince = 0;
 function zoneOn(p, name) {
   return p.showTip && p.tip && (p.tip.highlight || []).indexOf(name) >= 0;
 }
+// A zone of the mode the next tip waits for the driver to use (p.expect).
+function zoneExpect(p, name) {
+  return !p.showTip && (p.expect || []).indexOf(name) >= 0;
+}
 function zoneAttr(p, name) {
-  return zoneOn(p, name) ? ' class="zone-on" style="animation-delay: -' + (Date.now() - tipShownAt) + 'ms; ' : ' style="';
+  if (zoneOn(p, name)) return ' class="zone-on" style="animation-delay: -' + (Date.now() - tipShownAt) + 'ms; ';
+  return zoneExpect(p, name) ? ' class="zone-expect" style="' : ' style="';
 }
 function zoneTag(p, name) {
-  return zoneOn(p, name) ? '<span class="zone-tag">TIP</span>' : '';
+  if (zoneOn(p, name)) return '<span class="zone-tag">TIP</span>';
+  return zoneExpect(p, name) ? '<span class="zone-tag zone-tag-expect">NEXT TIP</span>' : '';
 }
 
 function render(p) {
@@ -549,6 +565,11 @@ function renderTip(p) {
     if (!p.level) {
       return idle + '<span style="font-size: 22px; color: #5C5E62">Context-aware manual is off. Press B, E or P to start it.</span></section>';
     }
+    if (p.freeDrive) {
+      return idle + '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 40px; font-weight: 700; letter-spacing: 0.04em; color: ' + accent + '">FREE DRIVE</span>' +
+        '<span style="font-size: 22px; color: #393C41">No tips for now. Drive as you like, and use any feature you want.</span>' +
+        '<span style="font-size: 19px; color: #8E8E93">' + esc(p.contextStatus || '') + '</span></section>';
+    }
     var dots = '';
     var progress = p.tipProgress || [0, 0];
     for (var i = 0; i < progress[1]; i++) {
@@ -564,7 +585,23 @@ function renderTip(p) {
   var heading = '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: #5C5E62">WHAT TO DO</span>';
   var actionLine = '<span style="font-size: 26px; font-weight: 600; text-align: center; color: #171A20">' + esc(tip.action || '') + '</span>';
   var visual;
-  if (tip.complete) {
+  if (tip.score) {
+    var rows = '';
+    tip.score.parts.forEach(function (part) {
+      var colour = part.score >= 80 ? '#1E9E52' : (part.score >= 50 ? accent : '#D97706');
+      rows += '<div style="display: flex; align-items: center; gap: 14px">' +
+        '<span style="width: 150px; font-size: 20px; font-weight: 600; color: #393C41">' + esc(part.name) + '</span>' +
+        '<div style="flex-grow: 1; height: 14px; border-radius: 7px; background: #E4E5E7">' +
+        '<div style="height: 14px; border-radius: 7px; background: ' + colour + '; width: ' + pct(part.score) + '"></div></div>' +
+        '<span style="width: 44px; text-align: right; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums">' + esc(part.score) + '</span></div>';
+    });
+    visual = '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: #5C5E62">YOUR DRIVING SCORE</span>' +
+      '<div style="flex-grow: 1; display: flex; align-items: center; gap: 36px">' +
+      '<div style="display: flex; flex-direction: column; align-items: center">' +
+      '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: 132px; font-weight: 700; line-height: 0.9; color: ' + accent + '">' + esc(tip.score.total) + '</span>' +
+      '<span style="font-size: 20px; color: #5C5E62">out of 100</span></div>' +
+      '<div style="flex-grow: 1; display: flex; flex-direction: column; gap: 14px">' + rows + '</div></div>';
+  } else if (tip.complete) {
     visual = heading +
       '<div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; gap: 28px">' +
       '<svg width="160" height="160" viewBox="0 0 84 84" fill="none" aria-hidden="true"><circle cx="42" cy="42" r="38" fill="#E7F6EC" stroke="#1E9E52" stroke-width="3"></circle>' +
@@ -590,7 +627,7 @@ function renderTip(p) {
     visual + '</div>' +
     '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 16px">' +
     '<div style="display: flex; align-items: center; gap: 12px">' +
-    '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: ' + (tip.complete ? '#1E9E52' : accent) + '">' + (tip.complete ? 'NICE ONE' : 'MANUAL TIP') + '</span>' +
+    '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: ' + (tip.complete ? '#1E9E52' : accent) + '">' + (tip.score ? 'FINAL TIP' : (tip.complete ? 'NICE ONE' : 'MANUAL TIP')) + '</span>' +
     '<span style="font-size: 17px; color: #5C5E62">for ' + esc(p.level) + ' drivers</span></div>' +
     '<h3 style="margin: 0; font-size: 46px; font-weight: 600; line-height: 1.12">' + esc(tip.title) + '</h3>' +
     '<p style="margin: 0; font-size: 27px; line-height: 1.4; color: #393C41">' + esc(tip.body) + '</p>' +
@@ -722,11 +759,11 @@ function draw() {
   if (!state.level) contextSince = 0;
   frame.style.setProperty('--accent', state.accent);
   var tipKey = state.showTip ? JSON.stringify([state.tip, state.level])
-    : 'idle' + JSON.stringify([state.level, state.contextStatus, state.tipProgress]);
+    : 'idle' + JSON.stringify([state.level, state.contextStatus, state.tipProgress, state.freeDrive]);
   if (tipKey !== shownTip) {
     if (state.showTip) {
       tipShownAt = Date.now();
-      chime(state.tip && state.tip.complete ? 'tipDone' : 'tip');
+      chime(state.tip && (state.tip.complete || state.tip.score) ? 'tipDone' : 'tip');
     }
     tipSlot.innerHTML = renderTip(state);
     shownTip = tipKey;

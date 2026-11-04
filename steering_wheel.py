@@ -4,7 +4,7 @@ Reads steering, throttle, brake and clutch from the wheel through pygame and
 drives its force feedback through SDL's haptic API, called with ctypes on the
 SDL2 library pygame itself loaded (pygame does not expose haptics).
 
-Steering goes through a steering ratio (STEER_RATIO, 9:1 by default): the
+Steering goes through a steering ratio (STEER_RATIO, 8:1 by default): the
 900-degree wheel turns the front wheels 45 degrees each way, instead of
 CARLA's full 70 at a quarter turn. Real sedans are about 15:1, which feels
 sluggish without a car's motion around you.
@@ -85,7 +85,7 @@ PEDAL_DEADZONE = 0.03
 WHEEL_RANGE = 900.0
 # Degrees of wheel per degree of front-wheel angle; picked by driving it
 # (a real sedan is about 15; 10 still felt a little slow).
-STEER_RATIO = 9.0
+STEER_RATIO = 8.0
 
 # CARLA's default steering curve: the share of the steer that reaches the
 # wheels at a speed (km/h). It works like a variable ratio on top of ours.

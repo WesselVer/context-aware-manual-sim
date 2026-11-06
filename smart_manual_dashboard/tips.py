@@ -558,9 +558,12 @@ class Tips(object):
         was, now = _family(prev), _family(assist)
         if prev.endswith('standby') and assist == was:
             events.append('resume')
-        if now == 'Cruise' and was != 'Cruise':
+        # On is holding the speed, however it got there: switched on, or
+        # resumed from standby (an assist left on standby before the tip came
+        # up could otherwise never be switched on for it).
+        if assist == 'Cruise' and prev != 'Cruise':
             events.append('cruise-on')
-        if now == 'ACC' and was != 'ACC':
+        if assist == 'ACC' and prev != 'ACC':
             events.append('acc-on')
         if assist == 'Autopilot':
             events.append('autopilot-on')

@@ -325,6 +325,11 @@ ACC_RANGE_M = 100.0
 # How hard it closes a gap error (m/s of speed per m), the brake per km/h
 # over the target, and the deceleration a full brake gives.
 ACC_GAP_GAIN = 0.3
+# Closing in on the car ahead, it only brakes once matching its speed by the
+# set gap takes more than this (m/s2); below it, lifting the throttle does.
+# Braking for any closing speed held the car at whatever distance ACC came
+# on, whatever the gap.
+ACC_CLOSING_BRAKE_MS2 = 1.0
 ACC_BRAKE_PER_KMH = 0.04
 ACC_FULL_BRAKE_MS2 = 9.0
 ACC_MAX_BRAKE = 0.8
@@ -481,11 +486,13 @@ class CruiseControl(object):
             wanted = ACC_STANDSTILL_M + ACC_GAPS[self.gap - 1] * v
             # The speed that closes the gap error over a few seconds.
             target = min(target, 3.6 * max(0.0, v_lead + ACC_GAP_GAIN * (gap - wanted)))
-            # Closing in: the deceleration that matches its speed before the gap is gone.
+            # Closing in: the deceleration that matches its speed by the set gap,
+            # braked only when lifting off would not do.
             closing = v - v_lead
             if closing > 0.0:
-                needed = closing ** 2 / (2.0 * max(1.0, gap - 0.5 * ACC_STANDSTILL_M))
-                brake = needed / ACC_FULL_BRAKE_MS2
+                needed = closing ** 2 / (2.0 * max(1.0, gap - wanted))
+                if needed > ACC_CLOSING_BRAKE_MS2:
+                    brake = needed / ACC_FULL_BRAKE_MS2
             # Behind a stopped car: stop ACC_STANDSTILL_M short of it.
             if v_lead < 1.0 and v > 0.0:
                 needed = v ** 2 / (2.0 * max(0.5, gap - ACC_STANDSTILL_M))

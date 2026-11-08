@@ -38,6 +38,12 @@ when its turn comes (switching on an assist that is already on).
 Tips.pause() holds the tips back until the next start, for the free drive
 at the end of a user test (drive_log.py).
 
+Beside contextStatus (one line, for the full dashboard's tip panel) it sends
+manualStatus, the minimal dashboard's grey lines: `moment`, why now is or is
+not a moment for a tip (or why the tip on screen was given), and `next`, what
+the driver has to do before the next tip can come (a tip's `need`, falling
+back to its `waiting`), or the pause between tips.
+
 A tip that waits for the driver to use a mode first names that mode's zones
 (expect); while it waits, the page marks them with a lighter outline,
 beside the "Next tip when ..." line in the tip panel.
@@ -81,6 +87,17 @@ HARD_BRAKE = 50
 MANOEUVRE_HOLD_SECONDS = 3.0
 
 
+def _left(seconds):
+    """Whole seconds still to go, never below 1 (the condition holds at 0)."""
+    return max(1, int(seconds + 0.999))
+
+
+def _clock_text(seconds):
+    """'1:40' for 100 s."""
+    seconds = _left(seconds)
+    return '%d:%02d' % (seconds // 60, seconds % 60)
+
+
 # ==============================================================================
 # -- curricula -----------------------------------------------------------------
 # ==============================================================================
@@ -108,6 +125,7 @@ BEGINNER = [
          learn='brake-cancel',
          after=lambda tips: tips.used('Cruise') >= 20.0 or tips.saw('cruise-off'),
          waiting='after some driving with cruise control',
+         need=lambda tips: 'drive %d s more with cruise control on (or switch it off)' % _left(20.0 - tips.used('Cruise')),
          expect=['cruise'],
          done_title='Cruise control let go',
          done_body='You are driving yourself again. Press RES to go back to your set speed.'),
@@ -133,6 +151,7 @@ BEGINNER = [
          known=lambda tips: tips.assist == 'Autopilot',
          after=lambda tips: tips.used('ACC') >= 20.0 or tips.saw('acc-off'),
          waiting='after some driving with adaptive cruise',
+         need=lambda tips: 'drive %d s more with adaptive cruise on (or switch it off)' % _left(20.0 - tips.used('ACC')),
          expect=['acc'],
          done_title='The car is driving itself',
          done_body='Keep watching the road. Brake or steer and it hands the car back to you.'),
@@ -153,6 +172,7 @@ EXPERIENCED = [
          after=lambda tips: tips.assist in ('Cruise', 'ACC'),
          strict=True,
          waiting='when cruise control is on',
+         need='switch cruise control or adaptive cruise on',
          expect=['cruise', 'acc'],
          done_title='Set speed changed',
          done_body='The car eases to the new speed. Each press is 5 km/h.'),
@@ -168,6 +188,7 @@ EXPERIENCED = [
          after=lambda tips: tips.driving_yourself,
          strict=True, anytime=True,
          waiting='when you drive yourself, with no assist on',
+         need='drive yourself, with no assist on',
          done_title='Dynamic mode',
          done_body='The throttle answers sooner. Pull the left paddle to go back to Normal.'),
     dict(id='cc-resume',
@@ -181,6 +202,7 @@ EXPERIENCED = [
          after=lambda tips: tips.assist in ('Cruise standby', 'ACC standby'),
          strict=True, anytime=True,
          waiting='after you brake with cruise control on',
+         need='brake while cruise control is on',
          expect=['cruise', 'acc'],
          done_title='Back to your set speed',
          done_body='Cruise control holds it again.'),
@@ -195,6 +217,7 @@ EXPERIENCED = [
          after=lambda tips: tips.assist == 'Autopilot',
          strict=True, anytime=True,
          waiting='when the autopilot is driving',
+         need='switch the autopilot on',
          expect=['autopilot'],
          done_title='Autopilot speed changed',
          done_body='It drives at the new speed. Brake or steer to take over at any time.'),
@@ -227,6 +250,7 @@ EXPERT = [
          after=lambda tips: tips.assist == 'ACC',
          strict=True, anytime=True,
          waiting='when adaptive cruise is on',
+         need='switch adaptive cruise on',
          expect=['acc'],
          done_title='ACC speed changed',
          done_body='It aims for the new speed whenever the road ahead is clear.'),
@@ -242,6 +266,7 @@ EXPERT = [
          after=lambda tips: tips.assist == 'ACC',
          strict=True, anytime=True,
          waiting='when adaptive cruise is on',
+         need='switch adaptive cruise on',
          expect=['acc'],
          done_title='Following gap changed',
          done_body='The bars on the ACC card show the gap you picked.'),
@@ -257,6 +282,7 @@ EXPERT = [
          after=lambda tips: tips.driving_yourself,
          strict=True, anytime=True,
          waiting='when you drive yourself, with no assist on',
+         need='drive yourself, with no assist on',
          done_title='One-pedal driving',
          done_body='Ease off early to slow down. The left button turns regen back down.'),
     dict(id='ap-override',
@@ -270,6 +296,7 @@ EXPERT = [
          after=lambda tips: tips.assist == 'Autopilot',
          strict=True, anytime=True,
          waiting='when the autopilot is driving',
+         need='switch the autopilot on',
          expect=['autopilot'],
          done_title='You overrode the autopilot',
          done_body='Let go of the pedal and it returns to its set speed.'),
@@ -381,7 +408,7 @@ class Tips(object):
 
     def update(self, state, context):
         """state: the dashboard state; context: see the module docstring.
-        Returns dict(level, showTip, tip, contextStatus, tipProgress, expect)."""
+        Returns dict(level, showTip, tip, contextStatus, manualStatus, tipProgress, expect)."""
         now = self._clock()
         dt = 0.0 if self._last is None else min(now - self._last, 0.5)
         self._last = now
@@ -390,15 +417,16 @@ class Tips(object):
         events = self._events(self._prev, state)
         self._prev = dict(state)
         if not self.running:
-            return dict(level=None, showTip=False, tip=None, contextStatus=None, tipProgress=None, expect=None)
+            return dict(level=None, showTip=False, tip=None, contextStatus=None, manualStatus=None,
+                        tipProgress=None, expect=None)
 
         family = _family(assist)
         if family is not None and not assist.endswith('standby'):
             self._used[family] = self._used.get(family, 0.0) + dt
         self._seen.update(events)
         if self.paused:
-            return dict(level=self.level, showTip=False, tip=None, contextStatus=None, tipProgress=None,
-                        expect=None)
+            return dict(level=self.level, showTip=False, tip=None, contextStatus=None, manualStatus=None,
+                        tipProgress=None, expect=None)
         good, bad = self.moment()
 
         if self._tip is not None:
@@ -422,6 +450,7 @@ class Tips(object):
                     showTip=self._tip is not None,
                     tip=self._payload(),
                     contextStatus=self._status(good, bad, now),
+                    manualStatus=self._manual_status(good, bad, now),
                     tipProgress=[self._total - len(self._queue), self._total],
                     expect=self._expect(now))
 
@@ -471,6 +500,52 @@ class Tips(object):
         if bad:
             return 'Not now: %s' % bad
         return 'Waiting for a calm moment'
+
+    def _manual_status(self, good, bad, now):
+        """The minimal dashboard's lines: dict(moment, next), either None."""
+        if self._tip is not None:
+            if self._done_until is not None:
+                return dict(moment=None, next='Next tip at least %d s after this one' % TIP_GAP_SECONDS)
+            why = (self._why or '').replace('Why now: ', '')
+            return dict(moment='Picked this moment: %s' % why if why else None,
+                        next='This tip stays until you do it: %s' % self._tip.get('action', '').lower())
+        if not self._total:
+            return dict(moment=None, next='No %s tips yet' % self.level)
+        if not self._queue:
+            return dict(moment=None, next='All %s tips given. Drive as you like' % self.level)
+
+        nxt = self._queue[0]
+        ready = any(self._turn(t, now) for t in self._queue[:1] + [t for t in self._queue[1:] if t.get('anytime')])
+        if ready:
+            need = None
+        else:
+            need = nxt.get('need') or nxt.get('waiting', '')
+            if callable(need):
+                need = need(self)
+            need = 'Next tip when you %s' % need if nxt.get('need') else 'Next tip %s' % need
+            if not nxt.get('strict'):
+                need += ', or in %s anyway' % _clock_text(NEXT_ANYWAY_SECONDS - (now - self._turn_since))
+        pause = TIP_GAP_SECONDS - (now - self._last_tip)
+        if need is None and pause > 0:
+            need = 'Short pause after the last tip: %d s' % _left(pause)
+
+        if bad:
+            moment = 'Not a good moment for a tip: %s' % bad
+        elif good:
+            moment = 'Good moment for a tip: %s' % good.replace('Why now: ', '')
+        else:
+            moment = 'Waiting for a calm moment: %s' % self._moment_hint()
+        return dict(moment=moment, next=need)
+
+    def _moment_hint(self):
+        """How far the driver is from a good moment, for _manual_status."""
+        if self._ctx.get('speed', 0.0) < STOPPED_KMH:
+            return 'standing still, %d of %d s' % (self._stopped_for, STOPPED_SECONDS)
+        if self._steady_for > 0.0:
+            return 'steady speed on a straight road, %d of %d s' % (self._steady_for, STEADY_SECONDS)
+        if self._quiet_for > 0.0:
+            return 'a quiet straight road, %d of %d s' % (self._quiet_for, QUIET_SECONDS)
+        return 'keep a steady speed on a straight road, or stop'
 
     # -- the moment ------------------------------------------------------------
 

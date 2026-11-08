@@ -29,6 +29,11 @@
   Wheel (tip.control.device = 'wheel'): paddle-left, paddle-right, regen-down, regen-up.
   Gestures: release-throttle, press-brake, press-throttle.
 
+  layout: 'minimal' (J in the driver) swaps to a minimal layout: the speed on
+  the left, and cards on the right that pop out only while in use or named
+  by a tip, with manualStatus as grey lines under them. See "The minimal
+  layout" in the script.
+
   At the end of a test (drive_log.py) the free drive shows in the empty tip
   panel (freeDrive, with contextStatus counting down), and then the driving
   score as a final tip: tip.score = {total, parts: [{name, score, note}]},
@@ -109,11 +114,26 @@ button { font: inherit; }
   0%, 100% { box-shadow: 0 0 0 0 rgba(62, 106, 225, 0); background: #EAF0FD; }
   50% { box-shadow: 0 0 44px 10px rgba(62, 106, 225, 0.45), inset 0 0 30px rgba(62, 106, 225, 0.18); background: #DCE6FB; }
 }
+/* The minimal layout (layout: 'minimal', J in the driver): speed on the
+   left, cards that pop out on the right. A card slides in and out; kept in
+   step across redraws by a negative animation-delay from when it changed. */
+#mini { width: 1920px; height: 1080px; box-sizing: border-box; padding: 36px 48px; gap: 32px; background: #F2F3F5; color: #171A20; font-family: 'Barlow', system-ui, sans-serif; --accent: #3E6AE1; }
+.pop-in { animation: popIn 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.pop-out { animation: popOut 0.35s ease-in both; }
+@keyframes popIn { from { opacity: 0; transform: translateX(80px); } to { opacity: 1; transform: none; } }
+@keyframes popOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(80px); } }
+#m-road { transition: opacity 0.5s ease; }
 #offline { position: absolute; right: 48px; bottom: 12px; font: 600 14px 'Barlow', sans-serif; letter-spacing: 0.06em; color: #D97706; display: none; }
 </style>
 </head>
 <body>
-<div id="stage"><div id="frame"><div id="top"></div><div id="tipslot"></div></div></div>
+<div id="stage"><div id="frame"><div id="top"></div><div id="tipslot"></div></div>
+<div id="mini" style="display: none"><div id="m-left" style="display: contents"></div>
+<div style="flex-grow: 1; min-width: 0; position: relative; display: flex; flex-direction: column">
+<div id="m-road" style="position: absolute; inset: 0 0 90px 0; display: flex; align-items: center; justify-content: center"></div>
+<div style="position: relative; flex-grow: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px">
+<div id="m-cards" style="display: flex; flex-direction: column; align-items: center; gap: 20px"></div><div id="m-tip"></div></div>
+<div id="m-status" style="position: relative; height: 90px; flex-shrink: 0"></div></div></div></div>
 <div id="offline">NO DATA FROM CARLA</div>
 <script>
 'use strict';
@@ -144,6 +164,8 @@ var DEFAULTS = {
   regenLevel: 1,          // 0..3: Off | Low | Medium | Maximum
   showTip: false,
   tip: null,              // {title, body, why, highlight, control | gesture, action, complete}; null uses the level's sample tip
+  layout: 'full',         // full | minimal (J in the driver swaps them)
+  manualStatus: null,     // {moment, next}: the minimal layout's grey lines about the manual
   accent: '#3E6AE1'
 };
 
@@ -634,6 +656,285 @@ function renderTip(p) {
     '<span style="font-size: 19px; color: #5C5E62">' + esc(tip.why) + '</span></div></section>';
 }
 
+// ==== The minimal layout =====================================================
+// Speed takes the left panel; the right side stays clear (a lane view) until
+// something is in use or a tip names it: an assist that is on (or on
+// standby) pops out its card, a drive mode or regen change pops out its card
+// for MINI_POP_MS, and a tip's zones (tip.highlight, or the dashed expect)
+// pop theirs out too. The tip itself is one short card with the control to
+// use drawn on it, and grey lines at the bottom say what the manual is doing
+// (manualStatus).
+
+var COND = "'Barlow Semi Condensed', sans-serif";
+var MINI_POP_MS = 3000;
+
+// Line icons, drawn in currentColor on a 48 x 48 grid.
+function icon(name, size) {
+  var paths = {
+    cruise: '<path d="M8 34a17 17 0 1 1 32 0"></path><path d="M24 30 L32 18"></path><circle cx="24" cy="30" r="3" fill="currentColor"></circle>',
+    acc: '<rect x="14" y="4" width="20" height="15" rx="5"></rect><path d="M18 14 H30"></path><path d="M12 27 H36 M15 34 H33 M18 41 H30"></path>',
+    autopilot: '<circle cx="24" cy="24" r="18"></circle><circle cx="24" cy="26" r="5"></circle><path d="M6.5 22 H19 M29 22 H41.5 M24 31 V42"></path>',
+    Eco: '<path d="M9 39 C9 19 22 8 40 8 C40 27 29 39 11 39 Z"></path><path d="M9 39 L27 21"></path>',
+    Normal: '<path d="M5 33 V26 L12 17 H33 L41 26 H43 V33 Z"></path><circle cx="14" cy="34" r="4" fill="#FFFFFF"></circle><circle cx="34" cy="34" r="4" fill="#FFFFFF"></circle>',
+    Dynamic: '<path d="M27 4 L10 27 H23 L20 44 L38 20 H25 Z"></path>',
+    regen: '<rect x="4" y="13" width="34" height="22" rx="5"></rect><path d="M42 20 V28"></path>'
+  };
+  return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths[name] + '</svg>';
+}
+
+// The regen icon with its level filled in: 0 to 3 bars inside the battery.
+function regenIcon(level, size, colour) {
+  var bars = '';
+  for (var n = 0; n < 3; n++) {
+    bars += '<rect x="' + (9 + n * 9.5) + '" y="18" width="6" height="12" rx="1.5" fill="' + (n < level ? colour : '#E4E5E7') + '" stroke="none"></rect>';
+  }
+  return icon('regen', size).replace('</svg>', bars + '</svg>');
+}
+
+function family(assist) {
+  return assist.indexOf('Cruise') === 0 ? 'cruise' : (assist.indexOf('ACC') === 0 ? 'acc' : (assist === 'Autopilot' ? 'autopilot' : null));
+}
+
+// Which cards the right side wants, and when they came or went.
+var miniCards = {};
+var lastMode = null, lastRegen = null, modeAt = 0, regenAt = 0;
+var CARD_ORDER = ['cruise', 'acc', 'autopilot', 'driveMode', 'regen'];
+
+function miniWants(p, now) {
+  var fam = family(p.activeAssist);
+  function named(z) { return zoneOn(p, z) || zoneExpect(p, z); }
+  if (lastMode !== null && p.driveMode !== lastMode) modeAt = now;
+  if (lastRegen !== null && p.regenLevel !== lastRegen) regenAt = now;
+  lastMode = p.driveMode;
+  lastRegen = p.regenLevel;
+  return {
+    cruise: fam === 'cruise' || (!fam && named('cruise')),
+    acc: fam === 'acc' || (!fam && named('acc')),
+    autopilot: fam === 'autopilot' || named('autopilot'),
+    driveMode: now - modeAt < MINI_POP_MS || named('driveMode'),
+    regen: now - regenAt < MINI_POP_MS || named('regen')
+  };
+}
+
+function miniCard(p, name) {
+  var accent = p.accent;
+  var assist = p.activeAssist;
+  var on = family(assist) === name;
+  var standby = on && / standby$/.test(assist);
+  var colour = !on ? '#A2A3A5' : (standby ? '#D97706' : accent);
+  var border = !on ? '#E4E5E7' : (standby ? '#F0C27C' : accent);
+  var bg = !on ? '#FFFFFF' : (standby ? '#FFF8ED' : '#EAF0FD');
+  var attr = zoneAttr(p, name);
+  if (name === 'autopilot' && on && !zoneOn(p, name)) {
+    attr = ' class="ap-live" style="animation-delay: -' + (Date.now() - autopilotSince) + 'ms; ';
+  }
+  if (name === 'driveMode' || name === 'regen') { border = '#E4E5E7'; bg = '#FFFFFF'; }
+  var open = '<div' + attr + 'width: 600px; height: 124px; box-sizing: border-box; padding: 0 32px; border-radius: 20px; border: 2px solid ' + border + '; background: ' + bg + '; display: flex; align-items: center; gap: 28px">' + zoneTag(p, name);
+  function speedText(v) {
+    return '<div style="display: flex; align-items: baseline; gap: 10px; flex-grow: 1">' +
+      '<span style="font-family: ' + COND + '; font-size: 76px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; color: ' + (on ? '#171A20' : '#A2A3A5') + '">' + (on && v !== null ? esc(v) : '–') + '</span>' +
+      '<span style="font-size: 22px; color: #5C5E62">km/h</span></div>';
+  }
+  function chipText(text, fg, cbg) {
+    return '<span style="padding: 6px 14px; border-radius: 8px; font: 700 20px ' + COND + '; letter-spacing: 0.06em; background: ' + cbg + '; color: ' + fg + '">' + text + '</span>';
+  }
+  if (name === 'cruise') {
+    return open + '<span style="color: ' + colour + '">' + icon('cruise', 64) + '</span>' + speedText(p.setSpeed) +
+      (standby ? chipText('RES', '#D97706', '#FDEDD3') : '') + '</div>';
+  }
+  if (name === 'acc') {
+    var gap = Math.max(1, Math.min(4, p.accGap));
+    var bars = '';
+    [4, 3, 2, 1].forEach(function (n) {
+      bars += '<span style="display: block; height: 6px; border-radius: 3px; width: ' + (22 + (5 - n) * 12) + 'px; background: ' + (n <= gap ? colour : '#E4E5E7') + '"></span>';
+    });
+    var lead = on ? p.accLead : null;
+    var leadCar = '<svg width="32" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? colour : '#E4E5E7') + '" stroke-width="3" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
+    var side = p.accWaiting && on ? chipText('RES', '#D97706', '#FDEDD3')
+      : '<span style="width: 72px; text-align: right; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; color: #5C5E62">' + (lead !== null ? esc(lead) + ' m' : '') + '</span>';
+    return open + '<span style="color: ' + colour + '">' + icon('acc', 64) + '</span>' + speedText(p.setSpeed) +
+      '<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">' + leadCar + bars + '</div>' + side + '</div>';
+  }
+  if (name === 'autopilot') {
+    return open + '<span style="color: ' + colour + '">' + icon('autopilot', 64) + '</span>' + speedText(p.apTarget) +
+      (on && p.throttleOverride ? chipText('YOU', '#D97706', '#FDEDD3') : '') + '</div>';
+  }
+  if (name === 'driveMode') {
+    var modes = '';
+    ['Eco', 'Normal', 'Dynamic'].forEach(function (m) {
+      var sel = m === p.driveMode;
+      modes += '<span style="flex-grow: 1; flex-basis: 0; height: 76px; display: flex; align-items: center; justify-content: center; border-radius: 12px; background: ' + (sel ? accent : 'transparent') + '; color: ' + (sel ? '#FFFFFF' : '#A2A3A5') + '">' +
+        icon(m, 46).replace(/fill="#FFFFFF"/g, 'fill="' + (sel ? accent : '#F2F3F5') + '"') + '</span>';
+    });
+    return open + '<div style="flex-grow: 1; display: flex; gap: 6px; padding: 6px; border-radius: 16px; background: #F2F3F5">' + modes + '</div></div>';
+  }
+  var regen = Math.max(0, Math.min(3, p.regenLevel));
+  var steps = '';
+  [1, 2, 3].forEach(function (n) {
+    steps += '<span style="flex-grow: 1; flex-basis: 0; height: 22px; border-radius: 6px; background: ' + (n <= regen ? accent : '#E4E5E7') + '"></span>';
+  });
+  return open + '<span style="color: ' + (regen ? accent : '#A2A3A5') + '">' + regenIcon(regen, 64, regen ? accent : '#A2A3A5') + '</span>' +
+    '<div style="flex-grow: 1; display: flex; gap: 8px">' + steps + '</div></div>';
+}
+
+function renderMiniCards(p) {
+  var now = Date.now();
+  var want = miniWants(p, now);
+  var h = '';
+  CARD_ORDER.forEach(function (name) {
+    var c = miniCards[name];
+    if (want[name]) {
+      if (!c || c.leaving) c = miniCards[name] = { since: now - (c && c.leaving ? Math.max(0, 450 - (now - c.leaving)) : 0) };
+    } else if (c && !c.leaving) {
+      c.leaving = now;
+    } else if (c && now - c.leaving > 350) {
+      delete miniCards[name];
+      c = null;
+    }
+    if (!c) return;
+    var cls = c.leaving ? 'pop-out' : 'pop-in';
+    var since = c.leaving || c.since;
+    h += '<div class="' + cls + '" style="animation-delay: -' + (now - since) + 'ms">' + miniCard(p, name) + '</div>';
+  });
+  return h;
+}
+
+function renderMiniLeft(p) {
+  var accent = p.accent;
+  var assist = p.activeAssist;
+  var speed = p.speed;
+  var fam = family(assist);
+  var standby = / standby$/.test(assist);
+  var marker = fam === 'autopilot' ? p.apTarget : p.setSpeed;
+  var h = '<section aria-label="Speed" style="width: 720px; flex-shrink: 0; box-sizing: border-box; padding: 44px 56px; border-radius: 24px; background: #FFFFFF; border: 1px solid #E4E5E7; display: flex; flex-direction: column">';
+
+  // Top: the gear, and the manual's level while it runs.
+  h += '<div style="display: flex; align-items: center; justify-content: space-between">' +
+    '<div role="img" aria-label="Gear"' + zoneAttr(p, 'gear') + 'display: flex; gap: 6px; padding: 4px 8px">' + zoneTag(p, 'gear');
+  ['P', 'R', 'N', 'D'].forEach(function (g) {
+    var on = g === p.gear;
+    h += '<span style="width: 52px; text-align: center; font-family: ' + COND + '; font-size: 44px; font-weight: 700; color: ' + (on ? '#171A20' : '#C7C9CC') + '">' + g + '</span>';
+  });
+  h += '</div>' +
+    (p.level ? '<span style="display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 600; color: ' + accent + '">' +
+      '<span class="ctx-dot" style="animation-delay: -' + (Date.now() - contextSince) + 'ms"></span>' + esc(p.level) + '</span>' : '') +
+    '</div>';
+
+  // Middle: the speed, and the set speed of the assist in use.
+  h += '<div style="flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px">' +
+    '<div' + zoneAttr(p, 'speed') + 'display: flex; flex-direction: column; align-items: center; padding: 0 24px">' + zoneTag(p, 'speed') +
+    '<span style="font-family: ' + COND + '; font-size: 300px; font-weight: 600; line-height: 0.86; font-variant-numeric: tabular-nums; letter-spacing: -0.02em">' + (speed === null ? '–' : esc(speed)) + '</span>' +
+    '<span style="font-size: 30px; color: #5C5E62">km/h</span></div>' +
+    '<div style="height: 52px; display: flex; align-items: center">' +
+    (fam && marker !== null
+      ? '<span style="display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 12px; border-radius: 12px; background: ' + (standby ? '#FDEDD3' : '#EAF0FD') + '; color: ' + (standby ? '#D97706' : accent) + '">' +
+        icon(fam, 34) + '<span style="font-family: ' + COND + '; font-size: 32px; font-weight: 700">' + esc(marker) + '</span></span>'
+      : '') +
+    '</div></div>';
+
+  // The power bar: throttle to the right of the centre, brake to the left.
+  var applied = Math.max(0, Math.min(100, p.appliedThrottle));
+  var brake = Math.max(0, Math.min(100, p.brake));
+  var barZone = zoneOn(p, 'brake') && !zoneOn(p, 'throttle') ? 'brake' : 'throttle';
+  h += '<div' + zoneAttr(p, barZone) + 'align-self: center; width: 520px; padding: 10px 0">' + zoneTag(p, barZone) +
+    '<div style="position: relative; height: 12px; border-radius: 6px; background: #E4E5E7">' +
+    '<div style="position: absolute; left: 50%; height: 12px; border-radius: 0 6px 6px 0; background: #171A20; width: ' + (applied / 2) + '%"></div>' +
+    '<div style="position: absolute; right: 50%; height: 12px; border-radius: 6px 0 0 6px; background: #D97706; width: ' + (brake / 2) + '%"></div>' +
+    '<div style="position: absolute; left: 50%; top: -6px; width: 3px; height: 24px; border-radius: 2px; transform: translateX(-50%); background: #A2A3A5"></div>' +
+    '</div></div>';
+
+  // Bottom: the drive mode and regen, as icons.
+  var regen = Math.max(0, Math.min(3, p.regenLevel));
+  h += '<div style="display: flex; align-items: center; justify-content: center; gap: 36px; margin-top: 34px; color: #8E8E93">' +
+    '<span' + zoneAttr(p, 'driveMode') + 'display: flex; padding: 4px">' + zoneTag(p, 'driveMode') + icon(p.driveMode in { Eco: 1, Normal: 1, Dynamic: 1 } ? p.driveMode : 'Normal', 44) + '</span>' +
+    '<span' + zoneAttr(p, 'regen') + 'display: flex; padding: 4px">' + zoneTag(p, 'regen') + regenIcon(regen, 44, '#8E8E93') + '</span>' +
+    '</div>';
+  return h + '</section>';
+}
+
+// The lane ahead, behind the cards: your car, and the car ACC follows.
+function renderMiniRoad(p) {
+  var lead = family(p.activeAssist) === 'acc' ? p.accLead : null;
+  var s = '<svg width="560" height="760" viewBox="0 0 560 760" fill="none" aria-hidden="true">' +
+    '<path d="M150 0 L-60 760 M410 0 L620 760" stroke="#D0D1D2" stroke-width="4"></path>' +
+    '<path d="M230 0 L120 760 M330 0 L440 760" stroke="#D0D1D2" stroke-width="4" stroke-dasharray="28 34"></path>' +
+    '<rect x="238" y="600" width="84" height="132" rx="26" fill="#171A20"></rect>' +
+    '<rect x="252" y="628" width="56" height="30" rx="8" fill="#5C5E62"></rect>';
+  if (lead !== null) {
+    // 0 m just ahead of your car, 80 m and more near the horizon.
+    var t = Math.max(0, Math.min(1, lead / 80));
+    var y = 470 - t * 400, w = 70 - t * 36, hgt = w * 1.5;
+    s += '<path d="M280 ' + (y + hgt + 10) + ' V590" stroke="' + p.accent + '" stroke-width="5" stroke-linecap="round"></path>' +
+      '<rect x="' + (280 - w / 2) + '" y="' + y + '" width="' + w + '" height="' + hgt + '" rx="' + (w * 0.3) + '" fill="#A2A3A5"></rect>';
+  }
+  return s + '</svg>';
+}
+
+// The tip, as one card: what to use drawn on the left, the title and the
+// action beside it. The why and what comes next are in the grey lines below.
+function renderMiniTip(p) {
+  if (!p.showTip) return '';
+  var accent = p.accent;
+  var tip = p.tip || SAMPLE_TIPS[p.level] || SAMPLE_TIPS.Experienced;
+  var card = '<section aria-label="Manual tip" class="tip-in" style="width: 1000px; box-sizing: border-box; padding: 28px 40px; border-radius: 24px; background: #FFFFFF; border: 2px solid #C5D3F5; display: flex; align-items: center; gap: 40px">';
+  if (tip.score) {
+    var rows = '';
+    tip.score.parts.forEach(function (part) {
+      var colour = part.score >= 80 ? '#1E9E52' : (part.score >= 50 ? accent : '#D97706');
+      rows += '<div style="display: flex; align-items: center; gap: 14px">' +
+        '<span style="width: 150px; font-size: 20px; font-weight: 600; color: #393C41">' + esc(part.name) + '</span>' +
+        '<div style="flex-grow: 1; height: 12px; border-radius: 6px; background: #E4E5E7">' +
+        '<div style="height: 12px; border-radius: 6px; background: ' + colour + '; width: ' + pct(part.score) + '"></div></div>' +
+        '<span style="width: 44px; text-align: right; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums">' + esc(part.score) + '</span></div>';
+    });
+    return card + '<div style="display: flex; flex-direction: column; align-items: center; width: 260px; flex-shrink: 0">' +
+      '<span style="font-size: 17px; font-weight: 700; letter-spacing: 0.08em; color: #5C5E62">DRIVING SCORE</span>' +
+      '<span style="font-family: ' + COND + '; font-size: 150px; font-weight: 700; line-height: 0.95; color: ' + accent + '">' + esc(tip.score.total) + '</span>' +
+      '<span style="font-size: 20px; color: #5C5E62">out of 100</span></div>' +
+      '<div style="flex-grow: 1; display: flex; flex-direction: column; gap: 14px">' + rows + '</div></section>';
+  }
+  var visual;
+  if (tip.complete) {
+    visual = '<svg width="150" height="150" viewBox="0 0 84 84" fill="none" aria-hidden="true"><circle cx="42" cy="42" r="38" fill="#E7F6EC" stroke="#1E9E52" stroke-width="3"></circle>' +
+      '<path class="d-tick" d="M25 43 L37 55 L60 30" stroke="#1E9E52" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+  } else if (tip.control) {
+    visual = '<div style="zoom: 1.3">' + controlSvg(tip.control) + '</div>';
+  } else if (tip.gesture && GESTURES[tip.gesture]) {
+    visual = '<div style="zoom: 1.5">' + GESTURES[tip.gesture] + '</div>';
+  } else {
+    visual = '<span style="min-width: 140px; height: 96px; box-sizing: border-box; padding: 0 26px; display: flex; align-items: center; justify-content: center; border-radius: 16px; border: 3px solid ' + accent + '; font-family: ' + COND + '; font-size: 46px; font-weight: 700; color: ' + accent + '">' + esc(tip.key) + '</span>';
+  }
+  return card + '<div style="width: 420px; flex-shrink: 0; display: flex; justify-content: center">' + visual + '</div>' +
+    '<div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px">' +
+    '<span style="font-size: 18px; font-weight: 700; letter-spacing: 0.08em; color: ' + (tip.complete ? '#1E9E52' : accent) + '">' + (tip.complete ? 'NICE ONE' : 'TIP') + '</span>' +
+    '<h3 style="margin: 0; font-size: 40px; font-weight: 600; line-height: 1.15">' + esc(tip.title) + '</h3>' +
+    '<span style="font-size: 26px; line-height: 1.35; color: #393C41">' + esc(tip.complete ? (tip.body || '') : (tip.action || tip.input || '')) + '</span>' +
+    '</div></section>';
+}
+
+// The grey lines at the bottom: tip progress, why now is or is not a moment
+// for a tip, and what has to happen before the next one.
+function renderMiniStatus(p) {
+  if (!p.level) return '';
+  var line = 'display: flex; align-items: center; gap: 14px; font-size: 22px; line-height: 1.3; color: #8E8E93';
+  var h = '<div style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; gap: 8px; align-items: center">';
+  if (p.freeDrive) {
+    return h + '<span style="' + line + '"><span style="font-weight: 700; letter-spacing: 0.06em; color: ' + p.accent + '">FREE DRIVE</span>No tips for now · ' + esc(p.contextStatus || '') + '</span></div>';
+  }
+  if (p.showTip && p.tip && p.tip.score) return '';
+  var ms = p.manualStatus || {};
+  var dots = '';
+  var progress = p.tipProgress || [0, 0];
+  for (var i = 0; i < progress[1]; i++) {
+    dots += '<span style="width: 11px; height: 11px; box-sizing: border-box; border-radius: 50%; ' + (i < progress[0] ? 'background: ' + p.accent : 'border: 2px solid #C7C9CC') + '"></span>';
+  }
+  var first = ms.moment || ms.next || p.contextStatus;
+  var second = ms.moment ? ms.next : null;
+  if (first) h += '<span style="' + line + '">' + (dots ? '<span style="display: flex; gap: 5px">' + dots + '</span>' : '') + esc(first) + '</span>';
+  if (second) h += '<span style="' + line + '">' + esc(second) + '</span>';
+  return h + '</div>';
+}
+
 // Chimes, made with Web Audio so there is no sound file; the browser is
 // started with autoplay allowed. Each is a list of [frequency (Hz), start
 // (s), length (s)] notes in one voice. Rising is on, falling is off, and
@@ -749,6 +1050,15 @@ var offline = document.getElementById('offline');
 var state = Object.assign({}, DEFAULTS);
 var shown = '';
 var shownTip = null;
+var heardTip = null;
+var mini = document.getElementById('mini');
+var miniLeft = document.getElementById('m-left');
+var miniCardsEl = document.getElementById('m-cards');
+var miniTip = document.getElementById('m-tip');
+var miniStatus = document.getElementById('m-status');
+var miniRoad = document.getElementById('m-road');
+var shownMini = null;
+var shownRoad = null;
 
 function draw() {
   assistChime(state.activeAssist);
@@ -758,13 +1068,50 @@ function draw() {
   if (state.level && !contextSince) contextSince = Date.now();
   if (!state.level) contextSince = 0;
   frame.style.setProperty('--accent', state.accent);
-  var tipKey = state.showTip ? JSON.stringify([state.tip, state.level])
-    : 'idle' + JSON.stringify([state.level, state.contextStatus, state.tipProgress, state.freeDrive]);
-  if (tipKey !== shownTip) {
-    if (state.showTip) {
+  mini.style.setProperty('--accent', state.accent);
+  var isMini = state.layout === 'minimal';
+  if (isMini !== shownMini) {
+    frame.style.display = isMini ? 'none' : '';
+    mini.style.display = isMini ? 'flex' : 'none';
+    shown = shownTip = shownRoad = null;
+    shownMini = isMini;
+  }
+  // The chime and the zones' pulse go with a new tip, not a layout swap.
+  var tipContent = state.showTip ? JSON.stringify([state.tip, state.level]) : null;
+  if (tipContent !== heardTip) {
+    if (tipContent !== null) {
       tipShownAt = Date.now();
       chime(state.tip && (state.tip.complete || state.tip.score) ? 'tipDone' : 'tip');
     }
+    heardTip = tipContent;
+  }
+  var tipKey = state.showTip ? tipContent
+    : 'idle' + JSON.stringify([state.level, state.contextStatus, state.tipProgress, state.freeDrive]);
+  if (isMini) {
+    // The tip card is drawn only when the tip changes, so its animations run on.
+    var miniTipKey = state.showTip ? tipKey : '';
+    if (miniTipKey !== shownTip) {
+      miniTip.innerHTML = renderMiniTip(state);
+      shownTip = miniTipKey;
+    }
+    var html = renderMiniLeft(state) + '\u0000' + renderMiniCards(state) + '\u0000' + renderMiniStatus(state);
+    if (html !== shown) {
+      var parts = html.split('\u0000');
+      miniLeft.innerHTML = parts[0];
+      miniCardsEl.innerHTML = parts[1];
+      miniStatus.innerHTML = parts[2];
+      shown = html;
+    }
+    var road = renderMiniRoad(state);
+    if (road !== shownRoad) {
+      miniRoad.innerHTML = road;
+      shownRoad = road;
+    }
+    // The lane view steps back while anything pops out over it.
+    miniRoad.style.opacity = state.showTip || Object.keys(miniCards).length ? '0.22' : '1';
+    return;
+  }
+  if (tipKey !== shownTip) {
     tipSlot.innerHTML = renderTip(state);
     shownTip = tipKey;
   }
@@ -783,6 +1130,8 @@ function fit() {
 window.addEventListener('resize', fit);
 fit();
 draw();
+// The minimal layout's cards pop back in on a timer, with or without new data.
+setInterval(function () { if (state.layout === 'minimal') draw(); }, 200);
 
 var events = new EventSource('events');
 events.onmessage = function (e) {

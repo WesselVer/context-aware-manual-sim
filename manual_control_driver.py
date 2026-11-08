@@ -71,6 +71,12 @@ keeping, speed, smoothness, features used) and the score shows as a final
 tip. --record also records the drive with CARLA's recorder. Afterwards,
 python -m smart_manual_dashboard.report P07 writes the
 participant's report.
+
+J swaps the dashboard between its full layout and a minimal one, styled after
+a production car's: the speed on the left, and cards that pop out on the
+right only while an assist is on, a drive mode or regen changes, or a tip
+names them, with grey lines under them saying what the manual waits for.
+--dashboard-layout minimal starts in it.
 """
 
 """
@@ -107,6 +113,7 @@ Use ARROWS or WASD keys for control.
     hold R       : context-aware manual off
     hold Z (5 s) : reset for the next participant (a tap is still the left blinker)
     F            : start the scored free drive at the end of the test; again to end it
+    J            : swap the dashboard between the full and the minimal layout
 
     V            : Select next map layer (Shift+V reverse)
     CTRL + B     : Load current selected map layer (CTRL + SHIFT + B to unload)
@@ -170,6 +177,7 @@ try:
     from pygame.locals import K_g
     from pygame.locals import K_h
     from pygame.locals import K_i
+    from pygame.locals import K_j
     from pygame.locals import K_k
     from pygame.locals import K_l
     from pygame.locals import K_m
@@ -920,8 +928,11 @@ class World(object):
 
 class KeyboardControl(object):
     """Class that handles keyboard input."""
-    def __init__(self, world, start_in_autopilot, wheel=None, tips=None, drive_log=None, record=False):
+    def __init__(self, world, start_in_autopilot, wheel=None, tips=None, drive_log=None, record=False,
+                 layout='full'):
         self._autopilot_enabled = start_in_autopilot
+        # The dashboard's layout, full or minimal; J swaps them.
+        self.layout = layout
         self._wheel = wheel
         # The context-aware manual, and when R went down to turn it off.
         self._tips = tips
@@ -1027,6 +1038,11 @@ class KeyboardControl(object):
                                 self._drive_log.set_level(LEVEL_KEYS[event.key])
                             else:
                                 self._start_test(client, world, LEVEL_KEYS[event.key])
+                elif event.key == K_j:
+                    self.layout = 'minimal' if self.layout == 'full' else 'full'
+                    world.hud.notification('Dashboard: %s layout' % self.layout)
+                    if self._drive_log is not None:
+                        self._drive_log.event('layout', self.layout)
                 elif event.key == K_f:
                     if self._drive_log is not None:
                         message = self._drive_log.toggle_free_drive()
@@ -1526,7 +1542,8 @@ class KeyboardControl(object):
         """The drivetrain values the dashboard shows."""
         # On autopilot the Traffic Manager's control is the one applied.
         control = self._ap_control if self._autopilot_enabled and self._ap_control else self._control
-        return dict(gear=self.selected_gear,
+        return dict(layout=self.layout,
+                    gear=self.selected_gear,
                     driveMode=DRIVE_MODES[self._drive_mode].name,
                     regenLevel=self._regen,
                     driverPedal=int(round(100 * self.pedal)),
@@ -2237,7 +2254,8 @@ def game_loop(args):
 
         hud = HUD(args.width, args.height)
         world = World(sim_world, hud, traffic_manager, args)
-        controller = KeyboardControl(world, args.autopilot, wheel, tips, drive_log, args.record)
+        controller = KeyboardControl(world, args.autopilot, wheel, tips, drive_log, args.record,
+                                     args.dashboard_layout)
         context = DrivingContext(sim_world)
         probe = StudyProbe(sim_world, args.speed_limit)
 
@@ -2362,6 +2380,9 @@ def main():
     argparser.add_argument(
         '--dashboard-monitor', metavar='N', default=None, type=int,
         help='monitor to show the dashboard on, 0 = primary (default: the second monitor)')
+    argparser.add_argument(
+        '--dashboard-layout', choices=['full', 'minimal'], default='full',
+        help='dashboard layout to start in; J swaps it while driving (default: full)')
     argparser.add_argument(
         '--dashboard-port', metavar='P', default=0, type=int,
         help='HTTP port of the dashboard page (default: any free port)')

@@ -2390,8 +2390,8 @@ def main():
         '--no-wheel', action='store_const', const=None, dest='wheel',
         help='ignore any steering wheel')
     argparser.add_argument(
-        '--steer-ratio', metavar='R', default=8.0, type=float,
-        help='degrees of wheel per degree of front-wheel angle (default: 8)')
+        '--steer-ratio', metavar='R', default=7.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 7)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')

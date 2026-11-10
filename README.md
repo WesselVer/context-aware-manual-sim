@@ -17,12 +17,16 @@ manual's tips appear.
 
 ## Running it
 
-CARLA 0.9.16 (Windows), with its Python client in a Python 3.10 environment
-beside `pygame` and `numpy`:
+CARLA 0.9.16 (Windows), with its Python client (the release ships a wheel
+for Python 3.12 only) in an environment beside `pygame` and `numpy`:
 
 ```bash
 CarlaUE4.exe -windowed -ResX=1280 -ResY=720
 ```
+
+If the drive judders while the HUD reads 60 fps, the camera images are
+arriving late: the HUD counts the server's ticks, not the images. Close
+anything else using the GPU; `-quality-level=Low` is the fallback.
 
 ```bash
 python manual_control_driver.py --tm-port 8010

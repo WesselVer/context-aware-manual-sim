@@ -287,13 +287,14 @@ def get_actor_blueprints(world, filter, generation):
 
 # Cars Backspace cycles through, in order, each with a driver's-eye camera
 # position (metres, vehicle frame: x forward, y right, z up) tuned by eye so
-# the windshield, steering wheel and dashboard are all in view.
+# the windshield, steering wheel and dashboard are all in view; on CARLA
+# 0.9.16 moved 15 cm forward, closer to the wheel.
 DRIVER_EYES = [
-    ('vehicle.lincoln.mkz_2020', carla.Location(x=-0.25, y=-0.41, z=1.18)),
-    ('vehicle.dodge.charger_2020', carla.Location(x=-0.40, y=-0.42, z=1.24)),
-    ('vehicle.nissan.patrol_2021', carla.Location(x=-0.35, y=-0.48, z=1.68)),
-    ('vehicle.ford.crown', carla.Location(x=0.00, y=-0.40, z=1.08)),
-    ('vehicle.mini.cooper_s_2021', carla.Location(x=-0.35, y=-0.45, z=1.30)),
+    ('vehicle.lincoln.mkz_2020', carla.Location(x=-0.10, y=-0.41, z=1.18)),
+    ('vehicle.dodge.charger_2020', carla.Location(x=-0.25, y=-0.42, z=1.24)),
+    ('vehicle.nissan.patrol_2021', carla.Location(x=-0.20, y=-0.48, z=1.68)),
+    ('vehicle.ford.crown', carla.Location(x=0.15, y=-0.40, z=1.08)),
+    ('vehicle.mini.cooper_s_2021', carla.Location(x=-0.20, y=-0.45, z=1.30)),
 ]
 
 
@@ -309,9 +310,17 @@ DRIVE_MODES = [
 ]
 DEFAULT_DRIVE_MODE = 1
 
+# Exposure of the camera views, in stops over CARLA's auto exposure.
+EXPOSURE_COMPENSATION = 1.0
+
+# Images a second for each mirror.
+MIRROR_HZ = 15.0
+
 # Regenerative braking, which CARLA lacks, as brake applied when the
-# throttle is released: Off, Low, Medium, Maximum (about 0.5 g).
-REGEN_BRAKE = [0.0, 0.12, 0.25, 0.5]
+# throttle is released: Off, Low, Medium, Maximum. On CARLA 0.9.16 the
+# levels tuned on 0.10.0 (0.12, 0.25, 0.5) felt far too strong; these are a
+# third of them.
+REGEN_BRAKE = [0.0, 0.04, 0.08, 0.16]
 REGEN_NAMES = ['Off', 'Low', 'Medium', 'Maximum']
 
 # Cruise control: the lowest speed it holds, the step of + and -, and the
@@ -740,6 +749,7 @@ class World(object):
         self.imu_sensor = None
         self.radar_sensor = None
         self.camera_manager = None
+        self.mirrors = None
         self._weather_presets = find_weather_presets()
         self._weather_index = 0
         self._actor_filter = args.filter
@@ -852,6 +862,7 @@ class World(object):
         self.camera_manager = CameraManager(self.player, self.hud, self._gamma)
         self.camera_manager.transform_index = cam_pos_index
         self.camera_manager.set_sensor(cam_index, notify=False)
+        self.mirrors = Mirrors(self.player, self.hud.dim, self._gamma)
         actor_type = get_actor_display_name(self.player)
         self.hud.notification(actor_type)
         self.traffic_manager.update_vehicle_lights(self.player, True)
@@ -904,6 +915,9 @@ class World(object):
 
     def render(self, display):
         self.camera_manager.render(display)
+        # The mirrors belong to the driver's seat, the first camera position.
+        if self.mirrors is not None and self.camera_manager.transform_index == 0:
+            self.mirrors.render(display)
         self.hud.render(display)
 
     def destroy_sensors(self):
@@ -914,6 +928,9 @@ class World(object):
     def destroy(self):
         if self.radar_sensor is not None:
             self.toggle_radar()
+        if self.mirrors is not None:
+            self.mirrors.destroy()
+            self.mirrors = None
         sensors = [
             self.camera_manager.sensor,
             self.collision_sensor.sensor,
@@ -926,6 +943,86 @@ class World(object):
                 sensor.destroy()
         if self.player is not None:
             self.player.destroy()
+
+
+# ==============================================================================
+# -- Mirrors -------------------------------------------------------------------
+# ==============================================================================
+
+
+class Mirrors(object):
+    """The interior mirror and the driver's door mirror: two small cameras
+    looking back, drawn mirrored over the driver's view.
+
+    Each is a low-resolution camera at MIRROR_HZ images a second. Every
+    camera makes the server wait for its image, whatever its size, so they
+    are not free: the fewer images, the less the drive's frame rate drops.
+    The interior one looks back from the roof's rear edge
+    (through the cabin there is only the rear seats to see); the door one
+    from the left of the car, angled a little outwards.
+    """
+
+    # (name, image size, horizontal field of view, where on screen as shares
+    # of the window: centre x, top y, width)
+    LAYOUT = [
+        ('interior', (480, 130), 55, (0.50, 0.03, 0.30)),
+        ('door', (300, 200), 45, (0.11, 0.52, 0.17)),
+    ]
+
+    def __init__(self, vehicle, screen, gamma):
+        self._screen = screen
+        self._surfaces = {}
+        self._sensors = []
+        world = vehicle.get_world()
+        extent = vehicle.bounding_box.extent
+        mounts = {
+            'interior': carla.Transform(carla.Location(x=-extent.x + 0.2, z=2.0 * extent.z + 0.05),
+                                        carla.Rotation(yaw=180.0, pitch=-4.0)),
+            'door': carla.Transform(carla.Location(x=0.55 * extent.x - 0.6, y=-extent.y - 0.1, z=1.05),
+                                    carla.Rotation(yaw=195.0, pitch=-3.0)),
+        }
+        for name, (w, h), fov, _ in self.LAYOUT:
+            bp = world.get_blueprint_library().find('sensor.camera.rgb')
+            bp.set_attribute('image_size_x', str(w))
+            bp.set_attribute('image_size_y', str(h))
+            bp.set_attribute('fov', str(fov))
+            bp.set_attribute('sensor_tick', str(1.0 / MIRROR_HZ))
+            if bp.has_attribute('gamma'):
+                bp.set_attribute('gamma', str(gamma))
+            # No extra exposure: they look out at the bright road, not the cabin.
+            sensor = world.spawn_actor(bp, mounts[name], attach_to=vehicle, attachment_type=carla.AttachmentType.Rigid)
+            weak_self = weakref.ref(self)
+            sensor.listen(lambda image, name=name: Mirrors._on_image(weak_self, name, image))
+            self._sensors.append(sensor)
+
+    @staticmethod
+    def _on_image(weak_self, name, image):
+        self = weak_self()
+        if not self:
+            return
+        array = np.frombuffer(image.raw_data, dtype=np.uint8)
+        array = np.reshape(array, (image.height, image.width, 4))[:, :, 2::-1]
+        # A mirror shows the world left to right reversed.
+        array = array[:, ::-1]
+        self._surfaces[name] = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+
+    def render(self, display):
+        sw, sh = self._screen
+        for name, (w, h), _, (cx, top, share) in self.LAYOUT:
+            surface = self._surfaces.get(name)
+            if surface is None:
+                continue
+            width = int(sw * share)
+            height = int(width * h / w)
+            rect = pygame.Rect(int(sw * cx - width / 2), int(sh * top), width, height)
+            display.blit(pygame.transform.smoothscale(surface, rect.size), rect)
+            pygame.draw.rect(display, (24, 24, 26), rect.inflate(10, 10), 5, border_radius=14)
+
+    def destroy(self):
+        for sensor in self._sensors:
+            sensor.stop()
+            sensor.destroy()
+        self._sensors = []
 
 
 # ==============================================================================
@@ -2086,6 +2183,10 @@ class CameraManager(object):
                 bp.set_attribute('image_size_y', str(hud.dim[1]))
                 if bp.has_attribute('gamma'):
                     bp.set_attribute('gamma', str(gamma_correction))
+                # The auto exposure meters the bright road and sky, which
+                # leaves the cabin dark; one stop more shows the interior.
+                if bp.has_attribute('exposure_compensation'):
+                    bp.set_attribute('exposure_compensation', str(EXPOSURE_COMPENSATION))
                 for attr_name, attr_value in item[3].items():
                     bp.set_attribute(attr_name, attr_value)
             elif item[0].startswith('sensor.lidar'):
@@ -2376,8 +2477,8 @@ def main():
         '--rolename', metavar='NAME', default='hero',
         help='actor role name (default: "hero")')
     argparser.add_argument(
-        '--gamma', default=1.0, type=float,
-        help='Gamma correction of the camera (default: 1.0)')
+        '--gamma', default=2.2, type=float,
+        help='Gamma correction of the camera (default: 2.2; 1.0 suited CARLA 0.10.0 and is far too dark here)')
     argparser.add_argument(
         '--sync', action='store_true',
         help='Activate synchronous mode execution')
@@ -2403,8 +2504,8 @@ def main():
         '--no-wheel', action='store_const', const=None, dest='wheel',
         help='ignore any steering wheel')
     argparser.add_argument(
-        '--steer-ratio', metavar='R', default=7.0, type=float,
-        help='degrees of wheel per degree of front-wheel angle (default: 7)')
+        '--steer-ratio', metavar='R', default=14.0, type=float,
+        help='degrees of wheel per degree of front-wheel angle (default: 14)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')

@@ -4,8 +4,8 @@ Reads steering, throttle, brake and clutch from the wheel through pygame and
 drives its force feedback through SDL's haptic API, called with ctypes on the
 SDL2 library pygame itself loaded (pygame does not expose haptics).
 
-Steering goes through a steering ratio (STEER_RATIO, 7:1 by default): the
-900-degree wheel turns the front wheels 64 degrees each way, instead of
+Steering goes through a steering ratio (STEER_RATIO, 14:1 by default): the
+900-degree wheel turns the front wheels 32 degrees each way, instead of
 CARLA's full 70 at a quarter turn. Real sedans are about 15:1, which feels
 sluggish without a car's motion around you.
 
@@ -88,9 +88,13 @@ PEDAL_DEADZONE = 0.03
 # Lock-to-lock rotation of the wheel, as set in G HUB.
 WHEEL_RANGE = 900.0
 # Degrees of wheel per degree of front-wheel angle; picked by driving it
-# (a real sedan is about 15; 10 still felt a little slow, and after the
-# pilot 8 did too).
-STEER_RATIO = 7.0
+# (a real sedan is about 15). On CARLA 0.10.0, 10 and then 8 felt slow and
+# 7 was right; on CARLA 0.9.16, 7 felt twice too sensitive.
+STEER_RATIO = 14.0
+
+# The steering forces' strength on top of --ffb-gain: on CARLA 0.9.16 the
+# forces tuned on 0.10.0 felt too light.
+FFB_STRENGTH = 1.6
 
 # CARLA's default steering curve: the share of the steer that reaches the
 # wheels at a speed (km/h). It works like a variable ratio on top of ours.
@@ -436,8 +440,17 @@ class SteeringWheel(object):
             return
         speed = aligning = 0.0
         steer = 0.0
+        lateral = braking = 0.0
         if vehicle is not None:
             speed, aligning, steer = self._aligning_torque(vehicle)
+            # The car's acceleration across and along it (m/s2): cornering
+            # loads the wheel, braking pitches the weight onto the front.
+            accel = vehicle.get_acceleration()
+            transform = vehicle.get_transform()
+            right, forward = transform.get_right_vector(), transform.get_forward_vector()
+            lateral = accel.x * right.x + accel.y * right.y + accel.z * right.z
+            braking = max(0.0, -(accel.x * forward.x + accel.y * forward.y + accel.z * forward.z))
+        gain = self.ffb_gain * FFB_STRENGTH
         kmh = 3.6 * speed
         rolling = min(1.0, kmh / 100.0)
 
@@ -451,10 +464,10 @@ class SteeringWheel(object):
             self._accel_z_mean += (accel_z - self._accel_z_mean) * follow
             self._roll_rate_mean += (roll_rate - self._roll_rate_mean) * follow
             bump = abs(accel_z - self._accel_z_mean)
-            self._rumble = max(bump * 0.05, self._rumble * 0.85)
-            roll_kick = _clamp(0.006 * (roll_rate - self._roll_rate_mean), -0.35, 0.35)
-        texture = 0.03 * min(1.0, kmh / 30.0)  # tyres on asphalt
-        self._road.set(self.ffb_gain * min(0.6, texture + self._rumble))
+            self._rumble = max(bump * 0.09, self._rumble * 0.85)
+            roll_kick = _clamp(0.010 * (roll_rate - self._roll_rate_mean), -0.45, 0.45)
+        texture = 0.06 * min(1.0, kmh / 30.0)  # tyres on asphalt
+        self._road.set(self.ffb_gain * min(0.7, texture + self._rumble))
         kick = self._kick
         self._kick *= math.exp(-dt / 0.08)
 
@@ -465,19 +478,23 @@ class SteeringWheel(object):
             self._spring.set(0.8, steer * self._wheel_per_steer(vehicle))
             self._friction.set(0.0)
             self._damper.set(0.2)
-            self._torque.set(self.ffb_gain * (roll_kick + kick))
+            self._torque.set(gain * (roll_kick + kick))
             return
 
         # Power steering: most of the tyres' torque is assisted away at
         # parking speed, less of it as the speed rises.
         feel = 0.45 + 0.55 * rolling
-        self._torque.set(self.ffb_gain * (feel * aligning + roll_kick + kick))
+        # Cornering load: the harder the car corners, the more the wheel
+        # pulls back to the middle (a right turn pushes it left).
+        load = _clamp(-0.03 * lateral, -0.3, 0.3)
+        self._torque.set(gain * (feel * aligning + load + roll_kick + kick))
         # Caster centring for when the tyres give no torque (standing, slow).
-        self._spring.set(self.ffb_gain * (0.12 + 0.08 * rolling))
+        self._spring.set(gain * (0.12 + 0.08 * rolling))
         # Scrub at a standstill, mostly gone by 15 km/h; power steering
         # keeps it light.
-        self._friction.set(self.ffb_gain * 0.25 * max(0.0, 1.0 - kmh / 15.0))
-        self._damper.set(self.ffb_gain * (0.20 + 0.15 * rolling))
+        self._friction.set(gain * 0.25 * max(0.0, 1.0 - kmh / 15.0))
+        # Heavier under braking, the weight on the front tyres.
+        self._damper.set(gain * (0.20 + 0.15 * rolling + min(0.15, 0.02 * braking)))
 
     def _aligning_torque(self, vehicle):
         """(speed m/s, torque in [-1, 1] turning the wheel to the right, steer)."""

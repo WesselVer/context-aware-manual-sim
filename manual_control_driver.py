@@ -72,11 +72,11 @@ tip. --record also records the drive with CARLA's recorder. Afterwards,
 python -m smart_manual_dashboard.report P07 writes the
 participant's report.
 
-J swaps the dashboard between its full layout and a minimal one, styled after
-a production car's: the speed on the left, and cards that pop out on the
-right only while an assist is on, a drive mode or regen changes, or a tip
-names them, with grey lines under them saying what the manual waits for.
---dashboard-layout minimal starts in it.
+The dashboard starts in its minimal layout, styled after a production
+car's: the speed on the left, and cards that pop out on the right only while
+an assist is on, a drive mode or regen changes, or a tip names them, with
+grey lines under them saying what the manual waits for. J swaps it for the
+full layout, and --dashboard-layout full starts in that.
 """
 
 """
@@ -927,7 +927,7 @@ class World(object):
 class KeyboardControl(object):
     """Class that handles keyboard input."""
     def __init__(self, world, start_in_autopilot, wheel=None, tips=None, drive_log=None, record=False,
-                 layout='full'):
+                 layout='minimal'):
         self._autopilot_enabled = start_in_autopilot
         # The dashboard's layout, full or minimal; J swaps them.
         self.layout = layout
@@ -2377,8 +2377,8 @@ def main():
         '--dashboard-monitor', metavar='N', default=None, type=int,
         help='monitor to show the dashboard on, 0 = primary (default: the second monitor)')
     argparser.add_argument(
-        '--dashboard-layout', choices=['full', 'minimal'], default='full',
-        help='dashboard layout to start in; J swaps it while driving (default: full)')
+        '--dashboard-layout', choices=['full', 'minimal'], default='minimal',
+        help='dashboard layout to start in; J swaps it while driving (default: minimal)')
     argparser.add_argument(
         '--dashboard-port', metavar='P', default=0, type=int,
         help='HTTP port of the dashboard page (default: any free port)')

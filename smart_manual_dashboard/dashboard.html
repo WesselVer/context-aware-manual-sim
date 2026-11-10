@@ -124,6 +124,12 @@ button { font: inherit; }
 @keyframes popIn { from { opacity: 0; transform: translateX(80px); } to { opacity: 1; transform: none; } }
 @keyframes popOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(80px); } }
 #m-road { transition: opacity 0.5s ease; }
+/* The lane view: the autopilot's road flowing toward the car, and ACC's
+   radar waves going out from its front. */
+.rail-flow { animation: railFlow 0.9s linear infinite; }
+@keyframes railFlow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -60; } }
+.radar-wave { transform-box: view-box; transform-origin: 280px 596px; vector-effect: non-scaling-stroke; animation: radarWave 1.8s ease-out infinite; }
+@keyframes radarWave { 0% { transform: scale(0.8); opacity: 0; } 15% { opacity: 1; } 100% { transform: scale(3.2); opacity: 0; } }
 #offline { position: absolute; right: 48px; bottom: 12px; font: 600 14px 'Barlow', sans-serif; letter-spacing: 0.06em; color: #D97706; display: none; }
 </style>
 </head>
@@ -132,7 +138,7 @@ button { font: inherit; }
 <div id="mini" style="display: none"><div id="m-left" style="display: contents"></div>
 <div style="flex-grow: 1; min-width: 0; position: relative; display: flex; flex-direction: column">
 <div id="m-road" style="position: absolute; inset: 0 0 90px 0; display: flex; align-items: center; justify-content: center"></div>
-<div style="position: relative; flex-grow: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px">
+<div id="m-over" style="position: relative; flex-grow: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px">
 <div id="m-cards" style="display: flex; flex-direction: column; align-items: center; gap: 20px"></div><div id="m-tip"></div></div>
 <div id="m-status" style="position: relative; height: 90px; flex-shrink: 0"></div></div></div></div>
 <div id="offline">NO DATA FROM CARLA</div>
@@ -165,7 +171,7 @@ var DEFAULTS = {
   regenLevel: 1,          // 0..3: Off | Low | Medium | Maximum
   showTip: false,
   tip: null,              // {title, body, why, highlight, control | gesture, action, complete}; null uses SAMPLE_TIP
-  layout: 'full',         // full | minimal (J in the driver swaps them)
+  layout: 'minimal',      // full | minimal (J in the driver swaps them)
   manualStatus: null,     // {moment, next}: the minimal layout's grey lines about the manual
   accent: '#3E6AE1'
 };
@@ -194,6 +200,7 @@ function chip(text) {
 
 var tipShownAt = 0;
 var autopilotSince = 0;
+var accSince = 0;
 var contextSince = 0;
 
 // A zone the tip names gets the zone-on outline and a TIP tag. zoneAttr
@@ -723,12 +730,13 @@ function miniCard(p, name) {
     return open + '<span style="color: ' + colour + '">' + icon('cruise', 64) + '</span>' + speedText(p.setSpeed) +
       (standby ? chipText('RES', '#D97706', '#FDEDD3') : '') + '</div>';
   }
+  // The gap to the car ahead, the d-pad's setting: the same for ACC and the autopilot.
+  var gap = Math.max(1, Math.min(4, p.accGap));
+  var bars = '';
+  [4, 3, 2, 1].forEach(function (n) {
+    bars += '<span style="display: block; height: 6px; border-radius: 3px; width: ' + (22 + (5 - n) * 12) + 'px; background: ' + (n <= gap ? colour : '#E4E5E7') + '"></span>';
+  });
   if (name === 'acc') {
-    var gap = Math.max(1, Math.min(4, p.accGap));
-    var bars = '';
-    [4, 3, 2, 1].forEach(function (n) {
-      bars += '<span style="display: block; height: 6px; border-radius: 3px; width: ' + (22 + (5 - n) * 12) + 'px; background: ' + (n <= gap ? colour : '#E4E5E7') + '"></span>';
-    });
     var lead = on ? p.accLead : null;
     var leadCar = '<svg width="32" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? colour : '#E4E5E7') + '" stroke-width="3" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
     var side = p.accWaiting && on ? chipText('RES', '#D97706', '#FDEDD3')
@@ -737,8 +745,11 @@ function miniCard(p, name) {
       '<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">' + leadCar + bars + '</div>' + side + '</div>';
   }
   if (name === 'autopilot') {
+    var apCar = '<svg width="32" height="22" viewBox="0 0 40 26" fill="none" stroke="' + colour + '" stroke-width="3" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
+    var apSide = on && p.throttleOverride ? chipText('YOU', '#D97706', '#FDEDD3')
+      : '<span style="width: 72px; text-align: right; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; color: #5C5E62">' + (on ? esc(p.apDistance) + ' m' : '') + '</span>';
     return open + '<span style="color: ' + colour + '">' + icon('autopilot', 64) + '</span>' + speedText(p.apTarget) +
-      (on && p.throttleOverride ? chipText('YOU', '#D97706', '#FDEDD3') : '') + '</div>';
+      '<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">' + apCar + bars + '</div>' + apSide + '</div>';
   }
   if (name === 'driveMode') {
     var modes = '';
@@ -833,20 +844,52 @@ function renderMiniLeft(p) {
   return h + '</section>';
 }
 
-// The lane ahead, behind the cards: your car, and the car ACC follows.
+// The lane ahead, behind the cards: your car, and what the assist in use
+// does. The autopilot lights up the lane, the car on rails, with the road
+// flowing past; ACC sends radar waves ahead and shows the gap to the car it
+// follows. On standby, or with no assist, it is the plain lane.
 function renderMiniRoad(p) {
-  var lead = family(p.activeAssist) === 'acc' ? p.accLead : null;
+  var accent = p.accent;
+  var ap = p.activeAssist === 'Autopilot';
+  var acc = p.activeAssist === 'ACC';
+  var lead = acc ? p.accLead : null;
   var s = '<svg width="560" height="760" viewBox="0 0 560 760" fill="none" aria-hidden="true">' +
-    '<path d="M150 0 L-60 760 M410 0 L620 760" stroke="#D0D1D2" stroke-width="4"></path>' +
-    '<path d="M230 0 L120 760 M330 0 L440 760" stroke="#D0D1D2" stroke-width="4" stroke-dasharray="28 34"></path>' +
-    '<rect x="238" y="600" width="84" height="132" rx="26" fill="#171A20"></rect>' +
+    '<defs><linearGradient id="rail-fill" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="' + accent + '" stop-opacity="0"></stop>' +
+    '<stop offset="1" stop-color="' + accent + '" stop-opacity="0.22"></stop></linearGradient></defs>' +
+    '<path d="M150 0 L-60 760 M410 0 L620 760" stroke="#D0D1D2" stroke-width="4"></path>';
+  if (ap) {
+    // The lane, filled and edged in blue: rails the car runs on.
+    var flow = 'animation-delay: -' + (Date.now() - autopilotSince) + 'ms';
+    s += '<path d="M230 0 L330 0 L440 760 L120 760 Z" fill="url(#rail-fill)"></path>' +
+      '<path d="M230 0 L120 760 M330 0 L440 760" stroke="' + accent + '" stroke-opacity="0.25" stroke-width="18"></path>' +
+      '<path d="M230 0 L120 760 M330 0 L440 760" stroke="' + accent + '" stroke-width="6"></path>' +
+      '<path class="rail-flow" style="' + flow + '" d="M280 0 V586" stroke="' + accent + '" stroke-opacity="0.6" stroke-width="8" stroke-linecap="round" stroke-dasharray="20 40"></path>';
+  } else {
+    s += '<path d="M230 0 L120 760 M330 0 L440 760" stroke="#D0D1D2" stroke-width="4" stroke-dasharray="28 34"></path>';
+  }
+  if (acc) {
+    // Radar waves from the front of the car, one after another.
+    var since = Date.now() - accSince;
+    [0, 1, 2].forEach(function (n) {
+      s += '<path class="radar-wave" style="animation-delay: -' + (since + n * 600) + 'ms" d="M250 544 A60 60 0 0 1 310 544" stroke="' + accent + '" stroke-width="5" stroke-linecap="round"></path>';
+    });
+  }
+  s += '<rect x="238" y="600" width="84" height="132" rx="26" fill="#171A20"></rect>' +
     '<rect x="252" y="628" width="56" height="30" rx="8" fill="#5C5E62"></rect>';
   if (lead !== null) {
-    // 0 m just ahead of your car, 80 m and more near the horizon.
+    // 0 m just ahead of your car, 80 m and more near the horizon; the gap
+    // between them in metres beside the line.
     var t = Math.max(0, Math.min(1, lead / 80));
     var y = 470 - t * 400, w = 70 - t * 36, hgt = w * 1.5;
-    s += '<path d="M280 ' + (y + hgt + 10) + ' V590" stroke="' + p.accent + '" stroke-width="5" stroke-linecap="round"></path>' +
-      '<rect x="' + (280 - w / 2) + '" y="' + y + '" width="' + w + '" height="' + hgt + '" rx="' + (w * 0.3) + '" fill="#A2A3A5"></rect>';
+    var top = y + hgt + 10, mid = (top + 590) / 2;
+    s += '<path d="M280 ' + top + ' V590" stroke="' + accent + '" stroke-width="5" stroke-linecap="round"></path>' +
+      '<path d="M266 ' + top + ' H294 M266 590 H294" stroke="' + accent + '" stroke-width="5" stroke-linecap="round"></path>' +
+      '<rect x="' + (280 - w / 2) + '" y="' + y + '" width="' + w + '" height="' + hgt + '" rx="' + (w * 0.3) + '" fill="#A2A3A5"></rect>' +
+      '<rect x="306" y="' + (mid - 24) + '" width="104" height="48" rx="12" fill="#FFFFFF" stroke="' + accent + '" stroke-width="2"></rect>' +
+      '<text x="358" y="' + (mid + 11) + '" text-anchor="middle" style="font: 700 32px ' + COND + '" fill="' + accent + '">' + esc(lead) + ' m</text>';
+  } else if (acc) {
+    s += '<text x="280" y="420" text-anchor="middle" style="font: 600 26px Barlow, sans-serif" fill="#8E8E93">No car ahead</text>';
   }
   return s + '</svg>';
 }
@@ -1038,6 +1081,7 @@ var miniCardsEl = document.getElementById('m-cards');
 var miniTip = document.getElementById('m-tip');
 var miniStatus = document.getElementById('m-status');
 var miniRoad = document.getElementById('m-road');
+var miniOver = document.getElementById('m-over');
 var shownMini = null;
 var shownRoad = null;
 
@@ -1046,6 +1090,8 @@ function draw() {
   updateHum();
   if (state.activeAssist === 'Autopilot' && !autopilotSince) autopilotSince = Date.now();
   if (state.activeAssist !== 'Autopilot') autopilotSince = 0;
+  if (state.activeAssist === 'ACC' && !accSince) accSince = Date.now();
+  if (state.activeAssist !== 'ACC') accSince = 0;
   if (state.manual && !contextSince) contextSince = Date.now();
   if (!state.manual) contextSince = 0;
   frame.style.setProperty('--accent', state.accent);
@@ -1088,8 +1134,12 @@ function draw() {
       miniRoad.innerHTML = road;
       shownRoad = road;
     }
-    // The lane view steps back while anything pops out over it.
-    miniRoad.style.opacity = state.showTip || Object.keys(miniCards).length ? '0.22' : '1';
+    // While ACC or the autopilot drives, the lane view shows what it does:
+    // the cards go to the top, out of its way. Otherwise the lane view steps
+    // back while anything pops out over it.
+    var roadLive = !state.showTip && (state.activeAssist === 'ACC' || state.activeAssist === 'Autopilot');
+    miniOver.style.justifyContent = roadLive ? 'flex-start' : 'center';
+    miniRoad.style.opacity = roadLive || !(state.showTip || Object.keys(miniCards).length) ? '1' : '0.22';
     return;
   }
   if (tipKey !== shownTip) {

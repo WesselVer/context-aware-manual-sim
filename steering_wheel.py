@@ -67,16 +67,20 @@ WHEEL_BUTTON_RIGHT = 6
 DPAD_UP = 'dpad-up'
 DPAD_DOWN = 'dpad-down'
 
-# Cruise-control buttons, as measured on the G25. A long press of on/off
-# turns on adaptive cruise; gap - and + set its following distance, on the
-# d-pad: up closes the gap to the car ahead, down opens it.
-CRUISE_ON_OFF = 15
-CRUISE_DOWN = 16
-CRUISE_RESUME = 17
-CRUISE_UP = 18
+# The assists' buttons, as measured on the G25 (python steering_wheel.py).
+# The shifter's red row, left to right, is 0-3: cruise control, adaptive
+# cruise, the autopilot, and one unused. Each assist's button switches it on,
+# resumes it from standby, and switches it off. The silver cluster's top and
+# bottom (15, 17) step the set speed up and down; its left and right (16, 18)
+# are unused. Gap - and + set the following distance, on the d-pad: up
+# closes the gap to the car ahead, down opens it.
+CC_BUTTON = 0
+ACC_BUTTON = 1
+AUTOPILOT_BUTTON = 2
+CRUISE_UP = 15
+CRUISE_DOWN = 17
 GAP_DOWN = DPAD_UP
 GAP_UP = DPAD_DOWN
-AUTOPILOT_BUTTON = 0
 
 # Pedals travel too little near the ends to reach the extremes reliably.
 PEDAL_DEADZONE = 0.03

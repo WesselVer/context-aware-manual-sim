@@ -26,7 +26,7 @@
   to tap or hold on the shifter or the wheel, or tip.gesture, the movement the driver makes. Once the driver
   has done it, tip.complete shows it done, with a chime of its own.
   Zones: speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen.
-  Shifter buttons: cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, dpad-up (gap -), dpad-down (gap +).
+  Shifter buttons: speed-up, speed-down, cc, acc, autopilot, dpad-up (gap -), dpad-down (gap +).
   Wheel (tip.control.device = 'wheel'): paddle-left, paddle-right, regen-down, regen-up.
   Gestures: release-throttle, press-brake, press-throttle.
 
@@ -160,7 +160,7 @@ var DEFAULTS = {
   throttleOverride: null, // true while the pedal overrides an assist; null works it out from the bars
   accGap: 2,              // 1..4
   accLead: null,          // m to the car ahead while ACC is on; null when there is none
-  accWaiting: false,      // ACC stopped behind a car, waiting for RES or the throttle
+  accWaiting: false,      // ACC stopped behind a car, waiting for its button or the throttle
   apTarget: 30,           // km/h
   apDistance: 17,         // m
   appliedThrottle: 0,     // %
@@ -309,7 +309,7 @@ function render(p) {
     '<div style="display: flex; align-items: baseline; gap: 10px">' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(56, 38) + 'px; font-weight: 600; line-height: 1; color: ' + cc.value + '">' + esc(ccSpeed) + '</span>' +
     '<span style="font-size: 18px; color: #5C5E62">km/h set speed</span></div>' +
-    '<div style="display: flex; gap: 8px">' + chip('ON / OFF') + chip('+5 / −5') + chip('RES') +
+    '<div style="display: flex; gap: 8px">' + chip('CC') + chip('SPEED + / −') +
     '<span style="font-size: 15px; color: #5C5E62; margin-left: 6px">Brake cancels</span></div>', 'cruise');
 
   var bars = '';
@@ -325,7 +325,7 @@ function render(p) {
   });
   // The car ahead, drawn above the gap bars when ACC has one.
   var leadCar = '<svg width="34" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? accent : 'transparent') + '" stroke-width="2.5" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
-  var leadText = p.accWaiting && assist === 'ACC' ? 'Stopped · press RES to go'
+  var leadText = p.accWaiting && assist === 'ACC' ? 'Stopped · press ACC to go'
     : (lead !== null ? 'Car ahead · ' + esc(lead) + ' m' : (assist.indexOf('ACC') === 0 ? 'No car ahead' : gapSeconds + ' time gap'));
   h += card(acc, cardHead('Adaptive cruise', acc) +
     '<div style="display: flex; align-items: center; gap: 28px">' +
@@ -345,7 +345,7 @@ function render(p) {
     '<span style="font-size: 22px; font-weight: 600; color: ' + acc.value + '">Gap ' + gap + ' · ' + gapSeconds + '</span>' +
     '<span style="font-size: 16px; color: ' + (p.accWaiting && assist === 'ACC' ? '#D97706' : '#5C5E62') + '">' + leadText + '</span>' +
     '</div></div></div>' +
-    '<div style="display: flex; gap: 8px; align-items: center">' + chip('HOLD ON / OFF') + chip('GAP − / +') + chip('+5 / −5') + chip('RES') + '</div>', 'acc');
+    '<div style="display: flex; gap: 8px; align-items: center">' + chip('ACC') + chip('SPEED + / −') + chip('GAP − / +') + '</div>', 'acc');
 
   h += card(ap, cardHead('Autopilot', ap) +
     '<div style="display: flex; gap: 40px">' +
@@ -357,7 +357,7 @@ function render(p) {
     '<span style="font-size: 15px; font-weight: 600; letter-spacing: 0.06em; color: #5C5E62">FOLLOWING DISTANCE</span>' +
     '<span style="font-family: \'Barlow Semi Condensed\', sans-serif; font-size: ' + z(44, 32) + 'px; font-weight: 600; line-height: 1; color: ' + ap.value + '">' + esc(p.apDistance) + ' <span style="font-size: 18px; color: #5C5E62">m</span></span>' +
     '</div></div>' +
-    '<div style="display: flex; gap: 8px; align-items: center">' + chip('ON / OFF') + chip('+5 / −5') + chip('GAP − / +') +
+    '<div style="display: flex; gap: 8px; align-items: center">' + chip('AUTOPILOT') + chip('SPEED + / −') + chip('GAP − / +') +
     '<span style="font-size: 15px; color: #5C5E62; margin-left: 6px">Brake or steer to take over</span></div>', 'autopilot');
   h += '</section>';
 
@@ -480,10 +480,11 @@ GESTURES['press-throttle'] = GESTURES['press-brake'].replace('>BRAKE<', '>ACCELE
 // on. Each button is {x, y}, red for the red ones, r its radius when it is
 // not the usual 9, and a = the angle of a paddle (drawn as a bar).
 var DEVICES = {
-  // The shifter unit, as the reference sheet places its buttons: the cruise
-  // cluster in the silver panel (on/off at the top, -5 left, +5 right,
-  // resume below), the d-pad (up gap -, down gap +) and the red row
-  // (autopilot first). Its body runs on below the edge, with the H-gate.
+  // The shifter unit, as the reference sheet places its buttons: the silver
+  // panel (speed up at the top, down below; left and right unused), the
+  // d-pad (up gap -, down gap +) and the red row: cruise control, adaptive
+  // cruise, the autopilot, one unused. Its body runs on below the edge,
+  // with the H-gate.
   shifter: {
     where: 'top of the shifter',
     base: '<rect x="18" y="4" width="124" height="190" rx="38" fill="#F7F7F8" stroke="#D0D1D2" stroke-width="2"></rect>' +
@@ -491,10 +492,10 @@ var DEVICES = {
       '<path d="M80 86 V112 M67 99 H93" stroke="#E4E5E7" stroke-width="11" stroke-linecap="round"></path>' +
       '<path d="M56 144 V148 M80 144 V148 M104 144 V148" stroke="#D0D1D2" stroke-width="3" stroke-linecap="round"></path>',
     buttons: {
-      'cc-onoff': { x: 80, y: 28 }, 'cc-minus': { x: 60, y: 46 }, 'cc-plus': { x: 100, y: 46 }, 'cc-resume': { x: 80, y: 64 },
+      'speed-up': { x: 80, y: 28 }, 'silver-left': { x: 60, y: 46 }, 'silver-right': { x: 100, y: 46 }, 'speed-down': { x: 80, y: 64 },
       'dpad-up': { x: 80, y: 90, r: 5 }, 'dpad-down': { x: 80, y: 108, r: 5 },
-      'autopilot': { x: 44, y: 124, red: true }, 'red-2': { x: 68, y: 124, red: true },
-      'red-3': { x: 92, y: 124, red: true }, 'red-4': { x: 116, y: 124, red: true }
+      'cc': { x: 44, y: 124, red: true }, 'acc': { x: 68, y: 124, red: true },
+      'autopilot': { x: 92, y: 124, red: true }, 'red-4': { x: 116, y: 124, red: true }
     }
   },
   // The wheel from the driver's seat: the paddles behind its rim at ten and
@@ -728,7 +729,7 @@ function miniCard(p, name) {
   }
   if (name === 'cruise') {
     return open + '<span style="color: ' + colour + '">' + icon('cruise', 64) + '</span>' + speedText(p.setSpeed) +
-      (standby ? chipText('RES', '#D97706', '#FDEDD3') : '') + '</div>';
+      (standby ? chipText('PRESS CC', '#D97706', '#FDEDD3') : '') + '</div>';
   }
   // The gap to the car ahead, the d-pad's setting: the same for ACC and the autopilot.
   var gap = Math.max(1, Math.min(4, p.accGap));
@@ -739,7 +740,7 @@ function miniCard(p, name) {
   if (name === 'acc') {
     var lead = on ? p.accLead : null;
     var leadCar = '<svg width="32" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? colour : '#E4E5E7') + '" stroke-width="3" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
-    var side = p.accWaiting && on ? chipText('RES', '#D97706', '#FDEDD3')
+    var side = (p.accWaiting && on) || standby ? chipText('PRESS ACC', '#D97706', '#FDEDD3')
       : '<span style="width: 72px; text-align: right; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; color: #5C5E62">' + (lead !== null ? esc(lead) + ' m' : '') + '</span>';
     return open + '<span style="color: ' + colour + '">' + icon('acc', 64) + '</span>' + speedText(p.setSpeed) +
       '<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">' + leadCar + bars + '</div>' + side + '</div>';

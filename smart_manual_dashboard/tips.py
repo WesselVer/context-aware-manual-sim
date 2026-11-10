@@ -20,7 +20,7 @@ are no experience levels, as the car is new to everyone. A tip comes up when
   - its turn has come: the tip before it is done, and its own `after`
     condition holds (cruise used for a while, say), or NEXT_ANYWAY_SECONDS
     have passed without it. A `strict` tip waits for its condition however
-    long it takes (RES only means something with cruise on standby), and an
+    long it takes (resume only means something with cruise on standby), and an
     `anytime` tip may come before the tips ahead of it once its condition
     holds, so it is shown when its moment arises;
   - at least TIP_GAP_SECONDS after the last tip (the first may come
@@ -54,7 +54,8 @@ buttons, tap or hold, label; hint and where to override the words under the
 label), drawn on the shifter or the wheel, or the movement to make
 (gesture), drawn too:
   zones     speed, throttle, brake, gear, cruise, acc, autopilot, driveMode, regen
-  shifter   cc-onoff, cc-minus, cc-plus, cc-resume, autopilot, dpad-up (gap -), dpad-down (gap +)
+  shifter   speed-up, speed-down (the silver panel's top and bottom), cc, acc, autopilot
+            (the red row), dpad-up (gap -), dpad-down (gap +)
   wheel     paddle-left, paddle-right, regen-down, regen-up
   gestures  release-throttle, press-brake, press-throttle
 """
@@ -93,7 +94,7 @@ def _left(seconds):
 
 
 def _clause(sentence):
-    """'Press RES once.' as 'press RES once', to go inside a status line."""
+    """'Press CC once.' as 'press CC once', to go inside a status line."""
     return sentence[:1].lower() + sentence[1:].rstrip('.')
 
 
@@ -116,19 +117,19 @@ def _clock_text(seconds):
 TIPS = [
     dict(id='cc-on',
          title='Let cruise control hold your speed',
-         body='At the speed you want (20 km/h or more, in D), press ON / OFF once. '
+         body='At the speed you want (20 km/h or more, in D), press the CC button once. '
               'The car keeps that speed, so you can take your foot off the accelerator.',
          highlight=['cruise'],
-         control=dict(button='cc-onoff', press='tap', label='ON / OFF'),
+         control=dict(button='cc', press='tap', label='CC'),
          action='Press once to set your current speed.',
          learn='cruise-on',
          known=lambda tips: tips.assist == 'Cruise',
          done_title='Cruise control is on',
-         done_body='It holds your speed now. Press ON / OFF again to switch it off.'),
+         done_body='It holds your speed now. Press CC again to switch it off.'),
     dict(id='cc-brake',
          title='Tap the brake to switch cruise control off',
          body='Cruise control lets go the moment you touch the brake, so you are always in '
-              'control. It remembers your speed: RES picks it up again.',
+              'control. It remembers your speed: CC picks it up again.',
          highlight=['cruise', 'brake'],
          gesture='press-brake',
          action='Touch the brake pedal.',
@@ -138,29 +139,29 @@ TIPS = [
          need=lambda tips: 'drive %d s more with cruise control on (or switch it off)' % _left(20.0 - tips.used('Cruise')),
          expect=['cruise'],
          done_title='Cruise control let go',
-         done_body='You are driving yourself again. Press RES to go back to your set speed.'),
+         done_body='You are driving yourself again. Press CC to go back to your set speed.'),
     dict(id='cc-resume',
          title='Pick up your speed again after braking',
-         body='Braking put cruise control on standby. Press RES and the car goes back to the '
+         body='Braking put cruise control on standby. Press CC and the car goes back to the '
               'speed you had set.',
-         highlight=['cruise', 'acc'],
-         control=dict(button='cc-resume', press='tap', label='RES'),
-         action='Press RES once.',
+         highlight=['cruise'],
+         control=dict(button='cc', press='tap', label='CC'),
+         action='Press CC once.',
          learn='resume',
-         after=lambda tips: tips.assist in ('Cruise standby', 'ACC standby'),
+         after=lambda tips: tips.assist == 'Cruise standby',
          strict=True, anytime=True,
          waiting='after you brake with cruise control on',
          need='brake while cruise control is on',
-         expect=['cruise', 'acc'],
+         expect=['cruise'],
          done_title='Back to your set speed',
          done_body='Cruise control holds it again.'),
     dict(id='cc-adjust',
-         title='Change your cruise speed with the + and − buttons',
-         body='While cruise control is on, press +5 or −5 to change the set speed in '
-              '5 km/h steps.',
+         title='Change your cruise speed in 5 km/h steps',
+         body='While cruise control is on, press the top button to go 5 km/h faster, or the '
+              'bottom one to go 5 km/h slower.',
          highlight=['cruise'],
-         control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / −5'),
-         action='Press +5 or −5 once.',
+         control=dict(button=['speed-up', 'speed-down'], press='tap', label='SPEED + / −'),
+         action='Press the top or bottom button once.',
          learn='speed-adjust',
          after=lambda tips: tips.assist == 'Cruise',
          strict=True,
@@ -171,22 +172,22 @@ TIPS = [
          done_body='The car eases to the new speed. Each press is 5 km/h.'),
     dict(id='acc-on',
          title='Adaptive cruise keeps your distance for you',
-         body='From 20 km/h, hold ON / OFF for a second. The car speeds up to 30 km/h and '
+         body='From 20 km/h, press the ACC button. The car speeds up to 30 km/h and '
               'slows down for the car ahead, even to a stop. Brake to take over.',
          highlight=['acc'],
-         control=dict(button='cc-onoff', press='hold', label='ON / OFF'),
-         action='Hold for one second.',
+         control=dict(button='acc', press='tap', label='ACC'),
+         action='Press ACC once.',
          learn='acc-on',
          known=lambda tips: tips.assist == 'ACC',
          done_title='Adaptive cruise is on',
          done_body='It follows the car ahead, down to a stop. Brake to take over.'),
     dict(id='acc-speed',
          title='Tune the speed adaptive cruise aims for',
-         body='Press +5 or \u22125 to move its set speed in 5 km/h steps. It still slows down for '
-              'the car ahead.',
+         body='The top and bottom buttons move its set speed in 5 km/h steps. It still slows '
+              'down for the car ahead.',
          highlight=['acc'],
-         control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / \u22125'),
-         action='Press +5 or \u22125 once.',
+         control=dict(button=['speed-up', 'speed-down'], press='tap', label='SPEED + / −'),
+         action='Press the top or bottom button once.',
          learn='acc-speed-adjust',
          after=lambda tips: tips.assist == 'ACC',
          strict=True, anytime=True,
@@ -228,11 +229,11 @@ TIPS = [
          done_body='Keep watching the road. Brake or steer and it hands the car back to you.'),
     dict(id='ap-speed',
          title='Set how fast the autopilot drives',
-         body='With the autopilot on, press +5 or −5 to change its speed. It starts at a '
-              'calm 30 km/h.',
+         body='With the autopilot on, the top and bottom buttons change its speed in 5 km/h '
+              'steps. It starts at a calm 30 km/h.',
          highlight=['autopilot'],
-         control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / −5'),
-         action='Press +5 or −5 once.',
+         control=dict(button=['speed-up', 'speed-down'], press='tap', label='SPEED + / −'),
+         action='Press the top or bottom button once.',
          learn='ap-speed',
          after=lambda tips: tips.assist == 'Autopilot',
          strict=True, anytime=True,

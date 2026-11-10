@@ -33,18 +33,20 @@ adjust: left down, right up. CARLA has no regen, so it is brake applied on
 lift-off. The dashboard shows the mode, regen, throttle and brake.
 
 Cruise control, the plain kind that holds a speed with the throttle and never
-brakes, is on the wheel's cruise buttons: on/off switches it on at the current
-speed (20 km/h or more, in D), + and - change the set speed by 5 km/h, and
-resume returns to the last set speed. Braking, the clutch, the hand brake or
-leaving D cancels it; the throttle overrides it while pressed.
+brakes, is the first of the shifter's red buttons: it switches cruise on at
+the current speed (20 km/h or more, in D), and off again. The silver
+cluster's top and bottom change the set speed by 5 km/h. Braking, the
+clutch, the hand brake or leaving D puts it on standby; the same red button
+then resumes the last set speed. The throttle overrides it while pressed.
 
-Adaptive cruise control (ACC) is a long press of on/off, from 20 km/h like
+Adaptive cruise control (ACC) is the second red button, from 20 km/h like
 plain cruise. It speeds up to 30 km/h, or keeps the current speed when that
 is faster, follows the car ahead in your lane at the time gap set on the d-pad
 (up shorter, down longer)
 (1.0, 1.5, 2.0 or 2.5 s; 1.5 s to start), and brakes, down to a stop. After
-more than 3 s stopped it waits for resume or the throttle. The same +, -,
-resume and cancels apply.
+more than 3 s stopped it waits for its button or the throttle. The same
+speed buttons, standby and resume apply. Pressing one assist's button while
+the other is on switches over to it.
 
 Autopilot (the wheel's autopilot button, or K) drives the car around the map
 on CARLA's Traffic Manager, slowly (30 km/h to start) and in Eco; the wheel
@@ -206,7 +208,7 @@ from smart_manual_dashboard.drive_log import DATA_DIR, DriveLog
 from smart_manual_dashboard.tips import Tips
 from steering_wheel import (SteeringWheel, PADDLE_LEFT, PADDLE_RIGHT,
                             WHEEL_BUTTON_LEFT, WHEEL_BUTTON_RIGHT,
-                            CRUISE_ON_OFF, CRUISE_DOWN, CRUISE_RESUME, CRUISE_UP,
+                            CC_BUTTON, ACC_BUTTON, CRUISE_DOWN, CRUISE_UP,
                             GAP_DOWN, GAP_UP, AUTOPILOT_BUTTON)
 
 OBJECT_TO_COLOR = [
@@ -318,8 +320,6 @@ CRUISE_MAX_KMH = 180
 CRUISE_STEP_KMH = 5
 CRUISE_KP = 0.08
 CRUISE_KI = 0.03
-# Held this long, on/off turns on adaptive cruise instead.
-LONG_PRESS_SECONDS = 0.6
 
 # Adaptive cruise: the lowest speed it sets when switched on (it keeps a
 # faster one), time gaps for gap 1-4, the distance kept at a standstill, and
@@ -340,7 +340,7 @@ ACC_CLOSING_BRAKE_MS2 = 1.0
 ACC_BRAKE_PER_KMH = 0.04
 ACC_FULL_BRAKE_MS2 = 9.0
 ACC_MAX_BRAKE = 0.8
-# Stopped longer than this, it waits for resume or the throttle to go again.
+# Stopped longer than this, it waits for its button or the throttle to go again.
 ACC_AUTO_GO_SECONDS = 3.0
 
 # Autopilot: its starting speed and range (km/h), the drive mode it drives
@@ -401,21 +401,29 @@ class CruiseControl(object):
     def name(self):
         return 'ACC' if self.adaptive else 'Cruise'
 
-    def toggle(self, kmh, throttle):
-        """A short press of on/off: plain cruise on, or either one off."""
-        if self.on:
-            name = self.name
-            self.on = self.active = self.adaptive = self.waiting = False
-            self.set_speed = None
-            return '%s off' % name
+    def press(self, adaptive, kmh, throttle, default_speed=None):
+        """The cruise (adaptive False) or ACC button: switches that one on, at
+        the current speed or default_speed; on standby, resumes it (or
+        switches it off when too slow to); holding a speed, switches it off.
+        While the other one is on, switches over."""
+        if self.on and self.adaptive == adaptive:
+            if not self.active:
+                message = self.resume(kmh, throttle)
+                if self.active:
+                    return message
+            elif self.waiting:
+                return self.resume(kmh, throttle)
+            return self.off()
         self.on = True
-        return self._engage(kmh, int(round(kmh)), throttle)
+        self.active = self.waiting = False
+        self.adaptive = adaptive
+        return self._engage(kmh, default_speed or int(round(kmh)), throttle)
 
-    def adaptive_on(self, kmh, throttle, default_speed):
-        """A long press of on/off: adaptive cruise at default_speed."""
-        self.on = self.adaptive = True
-        self.waiting = False
-        return self._engage(kmh, default_speed, throttle)
+    def off(self):
+        name = self.name
+        self.on = self.active = self.adaptive = self.waiting = False
+        self.set_speed = None
+        return '%s off' % name
 
     def step_gap(self, step):
         self.gap = max(1, min(len(ACC_GAPS), self.gap + step))
@@ -961,9 +969,6 @@ class KeyboardControl(object):
         self._ap_control = None
         # The speed the Traffic Manager was last given, with any override.
         self._ap_tm_speed = None
-        # When on/off went down, and whether its long press has acted yet.
-        self._on_off_down = None
-        self._on_off_long = False
         self._applied_throttle = 0.0
         self._cruise_throttle = 0.0
         # The throttle asked for, before the drive mode shapes it, and the
@@ -1326,25 +1331,13 @@ class KeyboardControl(object):
                 step = 1 if button == WHEEL_BUTTON_RIGHT else -1
                 self._regen = max(0, min(len(REGEN_BRAKE) - 1, self._regen + step))
                 world.hud.notification('Regen %s' % REGEN_NAMES[self._regen])
-            elif button == CRUISE_ON_OFF:
-                # Acts on release (short) or once held long enough (long).
-                self._on_off_down, self._on_off_long = time.time(), False
-            elif button in (CRUISE_DOWN, CRUISE_RESUME, CRUISE_UP):
+            elif button in (CC_BUTTON, ACC_BUTTON, CRUISE_DOWN, CRUISE_UP):
                 self._cruise_button(button, world)
             elif button in (GAP_DOWN, GAP_UP):
                 world.hud.notification(self._cruise.step_gap(1 if button == GAP_UP else -1))
             elif button == AUTOPILOT_BUTTON:
                 self._set_autopilot(world, True)
                 return
-        if self._on_off_down is not None:
-            if self._wheel.is_down(CRUISE_ON_OFF):
-                if not self._on_off_long and time.time() - self._on_off_down >= LONG_PRESS_SECONDS:
-                    self._on_off_long = True
-                    self._cruise_button(CRUISE_ON_OFF, world, long_press=True)
-            else:
-                if not self._on_off_long:
-                    self._cruise_button(CRUISE_ON_OFF, world)
-                self._on_off_down = None
         steer, throttle, brake, clutch = self._wheel.read(world.player)
         if self._steer_cache == 0.0:
             self._control.steer = steer
@@ -1477,26 +1470,34 @@ class KeyboardControl(object):
             self._leads = LeadFinder(world.world)
         return self._leads
 
-    def _cruise_button(self, button, world, long_press=False):
+    def _cruise_button(self, button, world):
         kmh = _speed_kmh(world.player)
         throttle = self._applied_throttle
-        on = self._cruise.on
-        if button != CRUISE_ON_OFF and not on:
-            return
-        if not self._in_drive() and (button != CRUISE_ON_OFF or not on or long_press):
-            world.hud.notification('%s needs D' % ('ACC' if long_press else self._cruise.name))
-            return
-        if long_press:
-            self._cruise.lead = self._lead_finder(world).update(world.player)
-            start = max(ACC_START_KMH, int(round(kmh)))
-            message = self._cruise.adaptive_on(kmh, throttle, start)
-        elif button == CRUISE_ON_OFF:
-            message = self._cruise.toggle(kmh, throttle)
-        elif button == CRUISE_RESUME:
-            message = self._cruise.resume(kmh, throttle)
+        cruise = self._cruise
+        if button in (CC_BUTTON, ACC_BUTTON):
+            adaptive = button == ACC_BUTTON
+            name = 'ACC' if adaptive else 'Cruise'
+            if not self._in_drive():
+                # Out of D a button can only switch its assist off.
+                if cruise.on and cruise.adaptive == adaptive:
+                    world.hud.notification(cruise.off())
+                else:
+                    world.hud.notification('%s needs D' % name)
+                return
+            start = None
+            if adaptive and not cruise.on:
+                cruise.lead = self._lead_finder(world).update(world.player)
+            if adaptive:
+                start = max(ACC_START_KMH, int(round(kmh)))
+            message = cruise.press(adaptive, kmh, throttle, start)
         else:
+            if not cruise.on:
+                return
+            if not self._in_drive():
+                world.hud.notification('%s needs D' % cruise.name)
+                return
             step = CRUISE_STEP_KMH if button == CRUISE_UP else -CRUISE_STEP_KMH
-            message = self._cruise.change(step, kmh, throttle)
+            message = cruise.change(step, kmh, throttle)
         if message:
             world.hud.notification(message)
 

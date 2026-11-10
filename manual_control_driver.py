@@ -8,7 +8,8 @@
 
 """Allows controlling a vehicle with a keyboard, seen from the driver's seat.
 
-manual_control.py from the CARLA 0.10.0 release, changed to start in a
+manual_control.py from the CARLA 0.10.0 release, run on CARLA 0.9.16 for its
+Town04, changed to start in a
 driver's-eye camera, full screen on the primary monitor (--windowed for a
 window of --res). Backspace cycles the cars in DRIVER_EYES (Lincoln MKZ,
 Dodge Charger, Nissan Patrol, Ford taxi, Mini Cooper), each with a tuned eye
@@ -288,11 +289,11 @@ def get_actor_blueprints(world, filter, generation):
 # position (metres, vehicle frame: x forward, y right, z up) tuned by eye so
 # the windshield, steering wheel and dashboard are all in view.
 DRIVER_EYES = [
-    ('vehicle.lincoln.mkz', carla.Location(x=-0.25, y=-0.41, z=1.18)),
-    ('vehicle.dodge.charger', carla.Location(x=-0.40, y=-0.42, z=1.24)),
-    ('vehicle.nissan.patrol', carla.Location(x=-0.35, y=-0.48, z=1.68)),
-    ('vehicle.taxi.ford', carla.Location(x=0.00, y=-0.40, z=1.08)),
-    ('vehicle.mini.cooper', carla.Location(x=-0.35, y=-0.45, z=1.30)),
+    ('vehicle.lincoln.mkz_2020', carla.Location(x=-0.25, y=-0.41, z=1.18)),
+    ('vehicle.dodge.charger_2020', carla.Location(x=-0.40, y=-0.42, z=1.24)),
+    ('vehicle.nissan.patrol_2021', carla.Location(x=-0.35, y=-0.48, z=1.68)),
+    ('vehicle.ford.crown', carla.Location(x=0.00, y=-0.40, z=1.08)),
+    ('vehicle.mini.cooper_s_2021', carla.Location(x=-0.35, y=-0.45, z=1.30)),
 ]
 
 
@@ -2213,6 +2214,14 @@ def game_loop(args):
         client.set_timeout(2000.0)
 
         sim_world = client.get_world()
+        # The map to drive on: loaded only when the server shows another one,
+        # so a restart of this script on the same map is quick.
+        if args.map and not sim_world.get_map().name.endswith('/' + args.map):
+            print('Loading %s ...' % args.map)
+            sim_world = client.load_world(args.map)
+            # Town04 starts grey and foggy; a clear day reads better on screen
+            # (C cycles the weather while driving).
+            sim_world.set_weather(carla.WeatherParameters.ClearNoon)
         traffic_manager = client.get_trafficmanager(args.tm_port)
         if args.sync:
             original_settings = sim_world.get_settings()
@@ -2347,6 +2356,10 @@ def main():
     argparser.add_argument(
         '-a', '--autopilot', action='store_true',
         help='enable autopilot')
+    argparser.add_argument(
+        '--map', default='Town04_Opt',
+        help='map to drive on, loaded if the server has another one; empty keeps the current map '
+             '(default: Town04_Opt, a small town inside a highway loop)')
     argparser.add_argument(
         '--res', metavar='WIDTHxHEIGHT', default='1280x720',
         help='window resolution with --windowed (default: 1280x720)')

@@ -1,7 +1,6 @@
 """Context-aware tips: which tip the dashboard gives, and when.
 
-The context-aware manual starts when a level is picked (B, E or P on the
-keyboard: Beginner, Experienced, Expert) and stops on a long press of R;
+The context-aware manual starts on B and stops on a long press of R;
 until then the car drives as normal and no tip shows. While it runs,
 Tips.update() is called once a frame with the dashboard state (what the car
 and its assists are doing) and the driving context the driver script
@@ -14,9 +13,10 @@ measures in the world:
   junction_ahead m to a junction coming up on the road ahead, or None
   indicating     a blinker is on
 
-It returns the values for the dashboard's tip panel and level selector.
+It returns the values for the dashboard's tip panel and manual indicator.
 
-Each level has a curriculum: its tips, in order. A tip comes up when
+Every driver gets the same tips (TIPS), in order, from the basics up; there
+are no experience levels, as the car is new to everyone. A tip comes up when
   - its turn has come: the tip before it is done, and its own `after`
     condition holds (cruise used for a while, say), or NEXT_ANYWAY_SECONDS
     have passed without it. A `strict` tip waits for its condition however
@@ -24,7 +24,7 @@ Each level has a curriculum: its tips, in order. A tip comes up when
     `anytime` tip may come before the tips ahead of it once its condition
     holds, so it is shown when its moment arises;
   - at least TIP_GAP_SECONDS after the last tip (the first may come
-    straight away: picking the level is the driver settling in);
+    straight away: starting the manual is the driver settling in);
   - and the moment is safe (Tips.moment): standing still, steady on a
     straight, or a quiet road, with no junction coming up, no crowd of cars
     or people, and no manoeuvre (reversing, turning, indicating, braking
@@ -103,7 +103,12 @@ def _clock_text(seconds):
 # ==============================================================================
 
 
-BEGINNER = [
+# The one curriculum every participant gets, basics first: cruise control
+# on, off and back on, then adaptive cruise and its speed and gap, the
+# autopilot and overriding it, and last what to do when driving yourself,
+# the drive modes and one-pedal driving. All tips are in for now, to see in
+# the user tests which ones are worth keeping.
+TIPS = [
     dict(id='cc-on',
          title='Let cruise control hold your speed',
          body='At the speed you want (20 km/h or more, in D), press ON / OFF once. '
@@ -129,68 +134,6 @@ BEGINNER = [
          expect=['cruise'],
          done_title='Cruise control let go',
          done_body='You are driving yourself again. Press RES to go back to your set speed.'),
-    dict(id='acc-on',
-         title='Adaptive cruise keeps your distance for you',
-         body='From 20 km/h, hold ON / OFF for a second. The car speeds up to 30 km/h and '
-              'slows down with the car in front, even to a stop. Brake to take over.',
-         highlight=['acc'],
-         control=dict(button='cc-onoff', press='hold', label='ON / OFF'),
-         action='Hold for one second',
-         learn='acc-on',
-         known=lambda tips: tips.assist == 'ACC',
-         done_title='Adaptive cruise is on',
-         done_body='It follows the car ahead. The d-pad sets how far behind: up closer, down further.'),
-    dict(id='autopilot',
-         title='Let the car drive itself for a while',
-         body='In D, press the autopilot button. The car steers and keeps its speed. '
-              'Brake or turn the wheel to take over at any moment.',
-         highlight=['autopilot', 'gear'],
-         control=dict(button='autopilot', press='tap', label='AUTOPILOT'),
-         action='Press once, in D',
-         learn='autopilot-on',
-         known=lambda tips: tips.assist == 'Autopilot',
-         after=lambda tips: tips.used('ACC') >= 20.0 or tips.saw('acc-off'),
-         waiting='after some driving with adaptive cruise',
-         need=lambda tips: 'drive %d s more with adaptive cruise on (or switch it off)' % _left(20.0 - tips.used('ACC')),
-         expect=['acc'],
-         done_title='The car is driving itself',
-         done_body='Keep watching the road. Brake or steer and it hands the car back to you.'),
-]
-
-# An experienced driver knows the basics (P/R/N/D, cruise on and off) and
-# learns to fine-tune them: the set speed, resume, the drive modes and the
-# autopilot's speed.
-EXPERIENCED = [
-    dict(id='cc-adjust',
-         title='Change your cruise speed with the + and − buttons',
-         body='While cruise control or adaptive cruise is on, press +5 or −5 to change '
-              'the set speed in 5 km/h steps.',
-         highlight=['cruise', 'acc'],
-         control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / −5'),
-         action='Press + or − once',
-         learn='speed-adjust',
-         after=lambda tips: tips.assist in ('Cruise', 'ACC'),
-         strict=True,
-         waiting='when cruise control is on',
-         need='switch cruise control or adaptive cruise on',
-         expect=['cruise', 'acc'],
-         done_title='Set speed changed',
-         done_body='The car eases to the new speed. Each press is 5 km/h.'),
-    dict(id='drive-mode',
-         title='Wake the car up with Dynamic mode',
-         body='Pull the right paddle behind the wheel to step up to Dynamic, for a sharper '
-              'throttle. The left paddle steps back down, to Normal and Eco.',
-         highlight=['driveMode'],
-         control=dict(device='wheel', button='paddle-right', press='tap', label='PADDLE +',
-                      hint='PULL ONCE', where='behind the wheel'),
-         action='Pull the right paddle',
-         learn='mode-dynamic',
-         after=lambda tips: tips.driving_yourself,
-         strict=True, anytime=True,
-         waiting='when you drive yourself, with no assist on',
-         need='drive yourself, with no assist on',
-         done_title='Dynamic mode',
-         done_body='The throttle answers sooner. Pull the left paddle to go back to Normal.'),
     dict(id='cc-resume',
          title='Pick up your speed again after braking',
          body='Braking put cruise control on standby. Press RES and the car goes back to the '
@@ -206,39 +149,32 @@ EXPERIENCED = [
          expect=['cruise', 'acc'],
          done_title='Back to your set speed',
          done_body='Cruise control holds it again.'),
-    dict(id='ap-speed',
-         title='Set how fast the autopilot drives',
-         body='With the autopilot on, press +5 or −5 to change its speed. It starts at a '
-              'calm 30 km/h.',
-         highlight=['autopilot'],
+    dict(id='cc-adjust',
+         title='Change your cruise speed with the + and − buttons',
+         body='While cruise control is on, press +5 or −5 to change the set speed in '
+              '5 km/h steps.',
+         highlight=['cruise'],
          control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / −5'),
          action='Press + or − once',
-         learn='ap-speed',
-         after=lambda tips: tips.assist == 'Autopilot',
-         strict=True, anytime=True,
-         waiting='when the autopilot is driving',
-         need='switch the autopilot on',
-         expect=['autopilot'],
-         done_title='Autopilot speed changed',
-         done_body='It drives at the new speed. Brake or steer to take over at any time.'),
-]
-
-# An expert drives with the drive modes and regen already, and learns to get
-# the most from the assists: adaptive cruise tuned to the traffic, one-pedal
-# driving, and overriding the autopilot. All but the first may come in any
-# order, as their moments arise.
-EXPERT = [
+         learn='speed-adjust',
+         after=lambda tips: tips.assist == 'Cruise',
+         strict=True,
+         waiting='when cruise control is on',
+         need='switch cruise control on',
+         expect=['cruise'],
+         done_title='Set speed changed',
+         done_body='The car eases to the new speed. Each press is 5 km/h.'),
     dict(id='acc-on',
-         title='Let adaptive cruise follow the traffic',
-         body='Hold ON / OFF for a second. ACC holds 30 km/h or your speed, and keeps a time gap '
-              'to the car ahead, down to a stop.',
+         title='Adaptive cruise keeps your distance for you',
+         body='From 20 km/h, hold ON / OFF for a second. The car speeds up to 30 km/h and '
+              'slows down with the car in front, even to a stop. Brake to take over.',
          highlight=['acc'],
          control=dict(button='cc-onoff', press='hold', label='ON / OFF'),
          action='Hold for one second',
          learn='acc-on',
          known=lambda tips: tips.assist == 'ACC',
          done_title='Adaptive cruise is on',
-         done_body='Now tune it to the traffic: its speed and its distance.'),
+         done_body='It follows the car ahead, down to a stop. Brake to take over.'),
     dict(id='acc-speed',
          title='Tune the speed adaptive cruise aims for',
          body='Press +5 or \u22125 to move its set speed in 5 km/h steps. It still slows down for '
@@ -246,7 +182,7 @@ EXPERT = [
          highlight=['acc'],
          control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / \u22125'),
          action='Press + or \u2212 once',
-         learn='speed-adjust',
+         learn='acc-speed-adjust',
          after=lambda tips: tips.assist == 'ACC',
          strict=True, anytime=True,
          waiting='when adaptive cruise is on',
@@ -270,21 +206,36 @@ EXPERT = [
          expect=['acc'],
          done_title='Following gap changed',
          done_body='The bars on the ACC card show the gap you picked.'),
-    dict(id='regen-max',
-         title='Drive with one pedal',
-         body='Press the right button on the wheel until regen is at Maximum. Lift off the '
-              'accelerator and the car slows firmly, almost to a stop, without the brake.',
-         highlight=['regen'],
-         control=dict(device='wheel', button='regen-up', press='tap', label='REGEN +',
-                      hint='PRESS TO MAX', where='right, on the wheel'),
-         action='Press until regen shows Maximum',
-         learn='regen-max',
-         after=lambda tips: tips.driving_yourself,
+    dict(id='autopilot',
+         title='Let the car drive itself for a while',
+         body='In D, press the autopilot button. The car steers and keeps its speed. '
+              'Brake or turn the wheel to take over at any moment.',
+         highlight=['autopilot', 'gear'],
+         control=dict(button='autopilot', press='tap', label='AUTOPILOT'),
+         action='Press once, in D',
+         learn='autopilot-on',
+         known=lambda tips: tips.assist == 'Autopilot',
+         after=lambda tips: tips.used('ACC') >= 20.0 or tips.saw('acc-off'),
+         waiting='after some driving with adaptive cruise',
+         need=lambda tips: 'drive %d s more with adaptive cruise on (or switch it off)' % _left(20.0 - tips.used('ACC')),
+         expect=['acc'],
+         done_title='The car is driving itself',
+         done_body='Keep watching the road. Brake or steer and it hands the car back to you.'),
+    dict(id='ap-speed',
+         title='Set how fast the autopilot drives',
+         body='With the autopilot on, press +5 or −5 to change its speed. It starts at a '
+              'calm 30 km/h.',
+         highlight=['autopilot'],
+         control=dict(button=['cc-minus', 'cc-plus'], press='tap', label='+5 / −5'),
+         action='Press + or − once',
+         learn='ap-speed',
+         after=lambda tips: tips.assist == 'Autopilot',
          strict=True, anytime=True,
-         waiting='when you drive yourself, with no assist on',
-         need='drive yourself, with no assist on',
-         done_title='One-pedal driving',
-         done_body='Ease off early to slow down. The left button turns regen back down.'),
+         waiting='when the autopilot is driving',
+         need='switch the autopilot on',
+         expect=['autopilot'],
+         done_title='Autopilot speed changed',
+         done_body='It drives at the new speed. Brake or steer to take over at any time.'),
     dict(id='ap-override',
          title='Speed past the autopilot with the accelerator',
          body='With the autopilot on, press the accelerator to go faster for a moment, say to '
@@ -300,15 +251,37 @@ EXPERT = [
          expect=['autopilot'],
          done_title='You overrode the autopilot',
          done_body='Let go of the pedal and it returns to its set speed.'),
+    dict(id='drive-mode',
+         title='Wake the car up with Dynamic mode',
+         body='Pull the right paddle behind the wheel to step up to Dynamic, for a sharper '
+              'throttle. The left paddle steps back down, to Normal and Eco.',
+         highlight=['driveMode'],
+         control=dict(device='wheel', button='paddle-right', press='tap', label='PADDLE +',
+                      hint='PULL ONCE', where='behind the wheel'),
+         action='Pull the right paddle',
+         learn='mode-dynamic',
+         after=lambda tips: tips.driving_yourself,
+         strict=True,
+         waiting='when you drive yourself, with no assist on',
+         need='drive yourself, with no assist on',
+         done_title='Dynamic mode',
+         done_body='The throttle answers sooner. Pull the left paddle to go back to Normal.'),
+    dict(id='regen-max',
+         title='Drive with one pedal',
+         body='Press the right button on the wheel until regen is at Maximum. Lift off the '
+              'accelerator and the car slows firmly, almost to a stop, without the brake.',
+         highlight=['regen'],
+         control=dict(device='wheel', button='regen-up', press='tap', label='REGEN +',
+                      hint='PRESS TO MAX', where='right, on the wheel'),
+         action='Press until regen shows Maximum',
+         learn='regen-max',
+         after=lambda tips: tips.driving_yourself,
+         strict=True,
+         waiting='when you drive yourself, with no assist on',
+         need='drive yourself, with no assist on',
+         done_title='One-pedal driving',
+         done_body='Ease off early to slow down. The left button turns regen back down.'),
 ]
-
-CURRICULA = {
-    'Beginner': BEGINNER,
-    'Experienced': EXPERIENCED,
-    'Expert': EXPERT,
-}
-
-LEVELS = ['Beginner', 'Experienced', 'Expert']
 
 # What of a tip goes to the dashboard.
 PAYLOAD = ('id', 'title', 'body', 'highlight', 'control', 'gesture', 'action')
@@ -328,10 +301,10 @@ def _family(assist):
 
 
 class Tips(object):
-    def __init__(self, curricula=None, clock=time.time):
-        self._curricula = curricula or CURRICULA
+    def __init__(self, tips=None, clock=time.time):
+        self._tips = tips or TIPS
         self._clock = clock
-        self.level = None
+        self._on = False
         self._last = None
         self._prev = None
         # The activeAssist this frame, for the tips' `after` conditions.
@@ -361,27 +334,27 @@ class Tips(object):
 
     @property
     def running(self):
-        return self.level is not None
+        return self._on
 
-    def start(self, level):
-        """Start (or switch to) a level; returns a line for the HUD."""
-        if level == self.level:
-            return 'Context-aware manual: %s' % level
+    def start(self):
+        """Start the manual from its first tip; returns a line for the HUD."""
+        if self._on:
+            return 'Context-aware manual is on'
         self._reset()
         now = self._clock()
-        self.level = level
+        self._on = True
         self._turn_since = now
         self._last_tip = now - TIP_GAP_SECONDS
-        self._queue = list(self._curricula.get(level, []))
+        self._queue = list(self._tips)
         self._total = len(self._queue)
-        self._log('on, %s' % level)
-        return 'Context-aware manual: %s' % level
+        self._log('on')
+        return 'Context-aware manual on'
 
     def stop(self):
         """Stop giving tips; returns a line for the HUD."""
-        if self.level is not None:
+        if self._on:
             self._log('off')
-        self.level = None
+        self._on = False
         self._reset()
         return 'Context-aware manual off'
 
@@ -408,7 +381,7 @@ class Tips(object):
 
     def update(self, state, context):
         """state: the dashboard state; context: see the module docstring.
-        Returns dict(level, showTip, tip, contextStatus, manualStatus, tipProgress, expect)."""
+        Returns dict(manual, showTip, tip, contextStatus, manualStatus, tipProgress, expect)."""
         now = self._clock()
         dt = 0.0 if self._last is None else min(now - self._last, 0.5)
         self._last = now
@@ -417,7 +390,7 @@ class Tips(object):
         events = self._events(self._prev, state)
         self._prev = dict(state)
         if not self.running:
-            return dict(level=None, showTip=False, tip=None, contextStatus=None, manualStatus=None,
+            return dict(manual=False, showTip=False, tip=None, contextStatus=None, manualStatus=None,
                         tipProgress=None, expect=None)
 
         family = _family(assist)
@@ -425,7 +398,7 @@ class Tips(object):
             self._used[family] = self._used.get(family, 0.0) + dt
         self._seen.update(events)
         if self.paused:
-            return dict(level=self.level, showTip=False, tip=None, contextStatus=None, manualStatus=None,
+            return dict(manual=True, showTip=False, tip=None, contextStatus=None, manualStatus=None,
                         tipProgress=None, expect=None)
         good, bad = self.moment()
 
@@ -446,7 +419,7 @@ class Tips(object):
                     self._log('%s shown (%s)' % (nxt['id'], good))
                     break
 
-        return dict(level=self.level,
+        return dict(manual=True,
                     showTip=self._tip is not None,
                     tip=self._payload(),
                     contextStatus=self._status(good, bad, now),
@@ -491,9 +464,9 @@ class Tips(object):
         if self._tip is not None:
             return None
         if not self._total:
-            return 'No %s tips yet' % self.level
+            return 'No tips yet'
         if not self._queue:
-            return 'All %s tips given' % self.level
+            return 'All tips given'
         nxt = self._queue[0]
         if not self._turn(nxt, now):
             return 'Next tip %s' % nxt['waiting']
@@ -510,9 +483,9 @@ class Tips(object):
             return dict(moment='Picked this moment: %s' % why if why else None,
                         next='This tip stays until you do it: %s' % self._tip.get('action', '').lower())
         if not self._total:
-            return dict(moment=None, next='No %s tips yet' % self.level)
+            return dict(moment=None, next='No tips yet')
         if not self._queue:
-            return dict(moment=None, next='All %s tips given. Drive as you like' % self.level)
+            return dict(moment=None, next='All tips given. Drive as you like')
 
         nxt = self._queue[0]
         ready = any(self._turn(t, now) for t in self._queue[:1] + [t for t in self._queue[1:] if t.get('anytime')])
@@ -613,6 +586,8 @@ class Tips(object):
         if assist == prev and assist in ('Cruise', 'ACC') and \
                 state.get('setSpeed') != prev_state.get('setSpeed'):
             events.append('speed-adjust')
+            if assist == 'ACC':
+                events.append('acc-speed-adjust')
         if assist == prev == 'Autopilot' and state.get('apTarget') != prev_state.get('apTarget'):
             events.append('ap-speed')
         if assist == prev == 'ACC' and state.get('accGap') != prev_state.get('accGap'):

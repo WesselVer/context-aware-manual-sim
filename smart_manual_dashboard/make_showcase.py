@@ -3,8 +3,8 @@
 
 """Builds a self-contained replay page of the dashboard and its tips.
 
-A scripted Beginner drive (DRIVE below: speed, assists, traffic, junctions)
-runs through the real Tips class, so when each tip shows, waits or is done
+A scripted drive (DRIVE below: speed, assists, traffic, junctions) runs
+through the real Tips class, with the four tips it shows (SHOWCASE_TIPS), so when each tip shows, waits or is done
 is decided by tips.py exactly as in the simulator. The dashboard's frames,
 10 a second, play in the real dashboard.html, wrapped in a player with
 chapters and captions. Fonts are inlined, so the page is one file.
@@ -18,7 +18,10 @@ import os
 import re
 import sys
 
-from smart_manual_dashboard.tips import Tips
+from smart_manual_dashboard.tips import TIPS, Tips
+
+# The scripted drive shows the cruise-control, ACC and autopilot tips.
+SHOWCASE_TIPS = [tip for tip in TIPS if tip['id'] in ('cc-on', 'cc-brake', 'acc-on', 'autopilot')]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DT = 0.1
@@ -51,8 +54,8 @@ LEVEL_ON, LEVEL_OFF = 8.0, 144.0
 CHAPTERS = [
     (0, 'Driving as normal',
      'The simulator starts like any car. The context-aware manual is off, and the tip panel says how to start it.'),
-    (8, 'Beginner profile picked',
-     'The researcher presses B. Beginner lights up in the header. A junction is coming up, so the manual holds back.'),
+    (8, 'Context-aware manual started',
+     'The researcher presses B. The manual lights up in the header. A junction is coming up, so the manual holds back.'),
     (15, 'Turning at the junction',
      'Turning is a manoeuvre: no tip during it, or for 3 seconds after.'),
     (22, 'Tip 1: cruise control',
@@ -72,9 +75,9 @@ CHAPTERS = [
     (98, 'Adaptive cruise on',
      'Held for a second, ACC speeds up to 30 km/h and follows the car ahead at the set gap.'),
     (122, 'Tip 4: autopilot',
-     'After 20 seconds with ACC, the last Beginner tip shows the autopilot button on the red row.'),
+     'After 20 seconds with ACC, the last tip shows the autopilot button on the red row.'),
     (130, 'The car drives itself',
-     'Autopilot is on: all four Beginner tips are given.'),
+     'Autopilot is on: all four tips are given.'),
     (144, 'Manual off',
      'Holding R switches the context-aware manual off again.'),
 ]
@@ -90,7 +93,7 @@ def _speed(t):
 def frames():
     """The dashboard state every DT seconds, as changes from the frame before."""
     clock = [0.0]
-    tips = Tips(clock=lambda: clock[0])
+    tips = Tips(SHOWCASE_TIPS, clock=lambda: clock[0])
     out, last = [], {}
     for i in range(int(DURATION / DT) + 1):
         t = clock[0] = i * DT
@@ -106,7 +109,7 @@ def frames():
         context = dict(speed=speed, yaw_rate=values['yaw_rate'], cars_near=values['cars_near'],
                        walkers_near=0, junction_ahead=values['junction_ahead'], indicating=False)
         if abs(t - LEVEL_ON) < DT / 2:
-            tips.start('Beginner')
+            tips.start()
         if abs(t - LEVEL_OFF) < DT / 2:
             tips.stop()
         state.update(tips.update(state, context))

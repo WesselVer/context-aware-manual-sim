@@ -1,7 +1,7 @@
 """Logs a participant's drive and scores how they drive.
 
-manual_control_driver.py --participant P07 starts a DriveLog when the first
-level is picked (B, E or P), and from then on calls DriveLog.frame() once a
+manual_control_driver.py --participant P07 starts a DriveLog when the
+manual is first started (B), and from then on calls DriveLog.frame() once a
 frame with the dashboard state and what it measured in the world (the
 probe):
 
@@ -49,10 +49,10 @@ import os
 import shutil
 import time
 
-from smart_manual_dashboard.tips import CURRICULA, Tips, _family
+from smart_manual_dashboard.tips import TIPS, Tips, _family
 
-# The tip ids of every level, to the feature each teaches.
-TIP_FEATURES = {tip['id']: tip['learn'] for tips in CURRICULA.values() for tip in tips}
+# The tip ids, to the feature each teaches.
+TIP_FEATURES = {tip['id']: tip['learn'] for tip in TIPS}
 
 # Each participant's drive logs and report go in a folder of their own under
 # here: study_data/ beside the driver script, or SMART_MANUAL_DATA.
@@ -92,6 +92,7 @@ FEATURE_NAMES = {
     'acc-on': 'Adaptive cruise',
     'autopilot-on': 'Autopilot',
     'speed-adjust': 'Set speed + / -',
+    'acc-speed-adjust': 'ACC set speed + / -',
     'resume': 'Resume (RES)',
     'mode-dynamic': 'Dynamic mode',
     'ap-speed': 'Autopilot speed',
@@ -319,7 +320,7 @@ def score(m):
     return dict(total=int(round(sum(p['score'] for p in parts) / len(parts))), parts=parts)
 
 
-def final_tip(result, level, seconds=FREE_DRIVE_SECONDS):
+def final_tip(result, seconds=FREE_DRIVE_SECONDS):
     """The score as a tip for the dashboard's tip panel."""
     parts = result['parts']
     best = max(parts, key=lambda p: p['score'])
@@ -331,7 +332,7 @@ def final_tip(result, level, seconds=FREE_DRIVE_SECONDS):
                                                       worst['name'].lower(), worst['note'])
     return dict(id='final-score', title='Your drive: %d / 100' % result['total'], body=body,
                 why='Final tip · scored on the last %d seconds you drove without tips' % seconds,
-                score=result, level=level)
+                score=result)
 
 
 # ==============================================================================
@@ -344,7 +345,6 @@ class DriveLog(object):
         self.folder = folder
         self._clock = clock
         self._free_seconds = free_seconds
-        self.level = None
         self.phase = None
         self._csv = self._events_csv = None
         self._reset()
@@ -360,9 +360,6 @@ class DriveLog(object):
         self._result = None
         self._free_duration = 0.0
         self._last_event = {}
-        # The level each phase ended at, which its features are scored against;
-        # a level picked after the free drive does not change its score.
-        self._phase_levels = {}
 
     @property
     def running(self):
@@ -372,14 +369,13 @@ class DriveLog(object):
     def free_driving(self):
         return self.phase == 'free'
 
-    def start(self, level):
+    def start(self):
         """Starts a new log (closing any running one) in the guided phase."""
         self.close()
         self._reset()
         os.makedirs(self.folder, exist_ok=True)
         stamp = _now_stamp()
         self.stamp = stamp
-        self.level = level
         self._t0 = self._clock()
         self._csv_file = open(os.path.join(self.folder, 'drive-%s.csv' % stamp), 'w', newline='', encoding='utf-8')
         self._csv = csv.DictWriter(self._csv_file, COLUMNS)
@@ -389,13 +385,12 @@ class DriveLog(object):
         self._events_csv = csv.DictWriter(self._events_file, ['t', 'phase', 'kind', 'detail'])
         self._events_csv.writeheader()
         self._set_phase('guided')
-        return 'Test started: %s, logging to %s' % (level, os.path.basename(self.folder))
+        return 'Test started, logging to %s' % os.path.basename(self.folder)
 
     def next_participant(self):
         """Closes this test; the next one logs to a new session-<time> folder. Returns its name."""
         self.close()
         self._reset()
-        self.level = None
         name = time.strftime('session-%Y%m%d-%H%M%S')
         self.folder = os.path.join(os.path.dirname(self.folder), name)
         return name
@@ -403,7 +398,7 @@ class DriveLog(object):
     def toggle_free_drive(self):
         """F: starts the free drive, or ends it early and scores it."""
         if not self.running:
-            return 'Press B, E or P to start the test first'
+            return 'Press B to start the test first'
         if self.phase == 'free':
             self._finish_free_drive()
             if self._result is None:
@@ -415,14 +410,7 @@ class DriveLog(object):
         self._free_since = self._clock()
         return 'Free drive: up to %d s, F again to end it' % self._free_seconds
 
-    def set_level(self, level):
-        if self.running and level != self.level:
-            self.level = level
-            self.event('level', level)
-
     def _set_phase(self, phase):
-        if self.phase is not None:
-            self._phase_levels[self.phase] = self.level
         self.phase = phase
         self.event('phase', phase)
 
@@ -473,7 +461,7 @@ class DriveLog(object):
                             contextStatus='%d:%02d left' % (left // 60, left % 60))
         if self._result is not None:
             return dict(freeDrive=False, showTip=True,
-                        tip=final_tip(self._result, self._phase_levels.get('free'), self._free_duration))
+                        tip=final_tip(self._result, self._free_duration))
         return dict(freeDrive=False)
 
     def _sample(self, state, probe, tip):
@@ -517,13 +505,12 @@ class DriveLog(object):
     def phase_metrics(self, phase):
         rows = [row for row in self._rows if row['phase'] == phase]
         events = [e for e in self._events if e['phase'] == phase]
-        level = self._phase_levels.get(phase, self.level)
         m = metrics(rows, events, prompted_features(e for e in self._events if e['phase'] == 'guided'))
-        return dict(level=level, metrics=m, score=score(m) if rows else None)
+        return dict(metrics=m, score=score(m) if rows else None)
 
     def write_summary(self):
         """Writes drive.json (keeping an earlier one under a timestamp); returns it."""
-        summary = dict(started=self.stamp, level=self._phase_levels.get('free', self.level), sample_hz=SAMPLE_HZ,
+        summary = dict(started=self.stamp, sample_hz=SAMPLE_HZ,
                        free_drive_seconds=self._free_seconds,
                        phases={p: self.phase_metrics(p) for p in ('guided', 'free')
                                if any(row['phase'] == p for row in self._rows)},

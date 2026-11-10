@@ -19,10 +19,10 @@ import os
 import time
 
 from smart_manual_dashboard.drive_log import DATA_DIR, FEATURE_NAMES, score as drive_score
-from smart_manual_dashboard.tips import CURRICULA
+from smart_manual_dashboard.tips import TIPS
 
-# The tip ids of every level, to the feature each teaches.
-TIP_FEATURES = {tip['id']: tip['learn'] for tips in CURRICULA.values() for tip in tips}
+# The tip ids, to the feature each teaches.
+TIP_FEATURES = {tip['id']: tip['learn'] for tip in TIPS}
 
 # The metrics in the report's table, with how to show them.
 METRIC_ROWS = [
@@ -132,7 +132,6 @@ def report_html(participant, drive):
              % (_e(participant), _e(drive.get('started', '')), time.strftime('%Y-%m-%d %H:%M')))
 
     h.append('<div class="kpis">')
-    h.append('<div class="kpi"><span>Level</span><b>%s</b><span>the manual\'s tips</span></div>' % _e(drive.get('level') or '–'))
     h.append('<div class="kpi"><span>Driving score, free drive</span><b>%s</b><span>out of 100</span></div>'
              % _fmt(free_s['total'] if free_s else None))
     h.append('<div class="kpi"><span>Driving score, guided</span><b>%s</b><span>out of 100, with tips</span></div>'
@@ -193,7 +192,7 @@ def report_html(participant, drive):
 
 
 def summary_row(participant, drive):
-    row = dict(participant=participant, level=drive.get('level'), started=drive.get('started'),
+    row = dict(participant=participant, started=drive.get('started'),
                tips_shown=len(tip_timing(drive)),
                tips_done=sum(1 for t in tip_timing(drive) if t[2] is not None))
     for name in ('free', 'guided'):

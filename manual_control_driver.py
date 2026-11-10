@@ -56,13 +56,13 @@ full throttle, and the autopilot keeps steering, coming back to its own
 speed once the pedal is released.
 
 The context-aware manual (smart_manual_dashboard/tips.py) is off when the
-drive starts. B, E or P starts it for a Beginner, Experienced or Expert
-driver, which the dashboard's level selector lights up; holding R for a
+drive starts. B starts it, the same for every driver: the tips from the
+basics up. The dashboard's manual indicator lights up; holding R for a
 second stops it. A tip only comes at a safe moment: standing still, steady
 on a straight or a quiet road, with no junction coming up, few cars around
 and no manoeuvre under way. It stays until the driver has done it.
 
-User tests: with --participant P07, the first B, E or P starts the test as
+User tests: with --participant P07, the first B starts the test as
 well as the manual: a drive log in study_data/P07/
 (smart_manual_dashboard/drive_log.py) of the car, the assists, the tips, and
 CARLA's collision and lane-invasion sensors. F starts the free drive: no
@@ -109,7 +109,7 @@ Use ARROWS or WASD keys for control.
     O            : open/close all doors of vehicle
     T            : toggle vehicle's telemetry
 
-    B / E / P    : context-aware manual for a Beginner / Experienced / Expert
+    B            : start the context-aware manual
     hold R       : context-aware manual off
     hold Z (5 s) : reset for the next participant (a tap is still the left blinker)
     F            : start the scored free drive at the end of the test; again to end it
@@ -172,7 +172,6 @@ try:
     from pygame.locals import K_b
     from pygame.locals import K_c
     from pygame.locals import K_d
-    from pygame.locals import K_e
     from pygame.locals import K_f
     from pygame.locals import K_g
     from pygame.locals import K_h
@@ -372,7 +371,6 @@ CONTEXT_NEAR_M = 30.0
 CONTEXT_WALKERS_NEAR_M = 15.0
 JUNCTION_AHEAD_SECONDS = 4.0
 JUNCTION_AHEAD_MIN_M = 25.0
-LEVEL_KEYS = {K_b: 'Beginner', K_e: 'Experienced', K_p: 'Expert'}
 
 
 class CruiseControl(object):
@@ -1030,14 +1028,12 @@ class KeyboardControl(object):
                     world.next_map_layer(reverse=True)
                 elif event.key == K_v:
                     world.next_map_layer()
-                elif event.key in LEVEL_KEYS and not pygame.key.get_mods() & KMOD_CTRL:
-                    if self._tips is not None:
-                        world.hud.notification(self._tips.start(LEVEL_KEYS[event.key]))
-                        if self._drive_log is not None:
-                            if self._drive_log.running:
-                                self._drive_log.set_level(LEVEL_KEYS[event.key])
-                            else:
-                                self._start_test(client, world, LEVEL_KEYS[event.key])
+                elif event.key == K_b and self._tips is not None and not pygame.key.get_mods() & KMOD_CTRL:
+                    if not self._tips.running and self._drive_log is not None and self._drive_log.running:
+                        self._drive_log.event('manual', 'on')
+                    world.hud.notification(self._tips.start())
+                    if self._drive_log is not None and not self._drive_log.running:
+                        self._start_test(client, world)
                 elif event.key == K_j:
                     self.layout = 'minimal' if self.layout == 'full' else 'full'
                     world.hud.notification('Dashboard: %s layout' % self.layout)
@@ -1265,9 +1261,9 @@ class KeyboardControl(object):
         world.hud.notification('Ready for the next participant%s' % (': ' + folder if folder else ''),
                                seconds=5.0)
 
-    def _start_test(self, client, world, level):
-        """The first level picked: a new drive log, and CARLA's recorder with --record."""
-        world.hud.notification(self._drive_log.start(level), seconds=4.0)
+    def _start_test(self, client, world):
+        """The manual's first start: a new drive log, and CARLA's recorder with --record."""
+        world.hud.notification(self._drive_log.start(), seconds=4.0)
         if self._record:
             client.stop_recorder()
             path = os.path.join(self._drive_log.folder, 'recording-%s.log' % self._drive_log.stamp)
@@ -2204,7 +2200,7 @@ def game_loop(args):
     participant = args.participant or time.strftime('session-%Y%m%d-%H%M%S')
     drive_log = DriveLog(os.path.join(args.data or DATA_DIR, participant),
                          free_seconds=args.free_drive_seconds)
-    print('Participant %s: B, E or P starts the test, F the free drive (F again ends it).' % participant)
+    print('Participant %s: B starts the test, F the free drive (F again ends it).' % participant)
 
     try:
         # Opened first so the browser is up, and has taken and given back the

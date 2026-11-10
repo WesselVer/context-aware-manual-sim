@@ -309,11 +309,11 @@ def _demo():
     dashboard = Dashboard(args.port).start(args.monitor, open_window=not args.no_window)
     print('Serving %s, Ctrl+C to stop' % dashboard.url)
     try:
-        # The Beginner tips: steady at about 50 km/h, with a junction coming
+        # The tips: steady at about 50 km/h, with a junction coming
         # up for 8 s of every 40 that holds the first one back.
         t0 = time.time()
         tips = Tips()
-        tips.start('Beginner')
+        tips.start()
         while True:
             t = time.time() - t0
             speed = 50 + 1.5 * math.sin(t / 3.0)

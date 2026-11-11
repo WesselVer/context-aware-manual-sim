@@ -298,6 +298,14 @@ DRIVER_EYES = [
     ('vehicle.mini.cooper_s_2021', carla.Location(x=-0.20, y=-0.45, z=1.30)),
 ]
 
+# Where every drive starts, per map: on Town04, the highway's rightmost
+# lane on the loop's west side (its spawn point 31), with 150 m of straight
+# road ahead.
+START = {
+    'Town04_Opt': carla.Transform(carla.Location(x=-483.8, y=242.5, z=0.5), carla.Rotation(yaw=-90.1)),
+    'Town04': carla.Transform(carla.Location(x=-483.8, y=242.5, z=0.5), carla.Rotation(yaw=-90.1)),
+}
+
 # The tyres' longitudinal stiffness, capped per car. At CARLA 0.9.16's stock
 # values (3000-4000) a car slowing to a stop snaps from about 5 to 2 km/h in
 # 60 ms, near 2 g: the jolt felt at the end of a regen stop. It is the same
@@ -864,6 +872,14 @@ class World(object):
             self.player = self.world.try_spawn_actor(blueprint, spawn_point)
             self.show_vehicle_telemetry = False
             self.modify_vehicle_physics(self.player)
+        # Every drive starts in the same place: the map's START, if it has one
+        # and it is free; otherwise a random spawn point.
+        start = START.get(self.map.name.split('/')[-1])
+        if self.player is None and start is not None:
+            self.player = self.world.try_spawn_actor(blueprint, start)
+            if self.player is not None:
+                self.show_vehicle_telemetry = False
+                self.modify_vehicle_physics(self.player)
         while self.player is None:
             if not self.map.get_spawn_points():
                 print('There are no spawn points available in your map/town.')
@@ -1017,9 +1033,30 @@ class Mirrors(object):
         'vehicle.mini.cooper_s_2021': (0.94, 0.25),
     }
 
+    # The door mirror's glass in the driver's view, as a polygon (pixels at
+    # 1920x1200, read off a screenshot): the mirror's image fills the car's
+    # own glass, its frame round it. Other cars get a plain rectangle.
+    DOOR_GLASS = {
+        'vehicle.lincoln.mkz_2020': [(82, 787), (145, 707), (200, 702), (370, 690), (400, 697), (422, 735),
+                                     (429, 780), (417, 820), (400, 827), (110, 835), (92, 825)],
+    }
+
     def __init__(self, vehicle, screen, gamma):
         self._screen = screen
         self._places = {name: place for name, _, _, place in self.LAYOUT}
+        self._sizes = {name: size for name, size, _, _ in self.LAYOUT}
+        # name: (where on screen, the glass's shape as an alpha mask)
+        self._glass = {}
+        glass = self.DOOR_GLASS.get(vehicle.type_id)
+        if glass is not None:
+            pts = [(x * screen[0] / 1920.0, y * screen[1] / 1200.0) for x, y in glass]
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            rect = pygame.Rect(int(min(xs)), int(min(ys)), int(max(xs) - min(xs)) + 1, int(max(ys) - min(ys)) + 1)
+            mask = pygame.Surface(rect.size, pygame.SRCALPHA)
+            pygame.draw.polygon(mask, (255, 255, 255, 255), [(x - rect.x, y - rect.y) for x, y in pts])
+            self._glass['door'] = (rect, mask)
+            # The camera's image has the glass's shape, so it is not stretched.
+            self._sizes['door'] = (300, max(1, int(round(300.0 * rect.height / rect.width))))
         centre = self.INTERIOR_CENTRE.get(vehicle.type_id)
         if centre is not None:
             (w, h), share = self.LAYOUT[0][1], self.INTERIOR_WIDTH
@@ -1037,7 +1074,8 @@ class Mirrors(object):
             'door': carla.Transform(carla.Location(x=0.55 * extent.x - 1.0, y=-extent.y - 0.15, z=1.05),
                                     carla.Rotation(yaw=195.0, pitch=-3.0)),
         }
-        for name, (w, h), fov, _ in self.LAYOUT:
+        for name, _, fov, _ in self.LAYOUT:
+            w, h = self._sizes[name]
             bp = world.get_blueprint_library().find('sensor.camera.rgb')
             bp.set_attribute('image_size_x', str(w))
             bp.set_attribute('image_size_y', str(h))
@@ -1068,6 +1106,12 @@ class Mirrors(object):
             cx, top, share = self._places[name]
             surface = self._surfaces.get(name)
             if surface is None:
+                continue
+            if name in self._glass:
+                rect, mask = self._glass[name]
+                image = pygame.transform.smoothscale(surface, rect.size).convert_alpha()
+                image.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                display.blit(image, rect)
                 continue
             width = int(sw * share)
             height = int(width * h / w)

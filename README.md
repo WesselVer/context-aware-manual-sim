@@ -49,4 +49,5 @@ another. `--participant P07` logs a user test to `study_data/P07/`, and
 | Wheel's top buttons | regen down / up |
 
 An assist's red button switches it on, resumes it after braking, and switches
-it off. On the keyboard, B starts the manual and holding R stops it.
+it off. On the keyboard, B starts the manual, P skips a tip (for testing) and
+holding R stops it.

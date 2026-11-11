@@ -725,11 +725,11 @@ function miniCard(p, name) {
       '<span style="font-size: 22px; color: #5C5E62">km/h</span></div>';
   }
   function chipText(text, fg, cbg) {
-    return '<span style="padding: 6px 14px; border-radius: 8px; font: 700 20px ' + COND + '; letter-spacing: 0.06em; background: ' + cbg + '; color: ' + fg + '">' + text + '</span>';
+    return '<span style="padding: 6px 14px; border-radius: 8px; font: 700 20px/1.15 ' + COND + '; letter-spacing: 0.06em; text-align: center; background: ' + cbg + '; color: ' + fg + '">' + text + '</span>';
   }
   if (name === 'cruise') {
     return open + '<span style="color: ' + colour + '">' + icon('cruise', 64) + '</span>' + speedText(p.setSpeed) +
-      (standby ? chipText('PRESS CC', '#D97706', '#FDEDD3') : '') + '</div>';
+      (standby ? chipText('PRESS CC<br>TO RESUME', '#D97706', '#FDEDD3') : '') + '</div>';
   }
   // The gap to the car ahead, the d-pad's setting: the same for ACC and the autopilot.
   var gap = Math.max(1, Math.min(4, p.accGap));
@@ -740,7 +740,7 @@ function miniCard(p, name) {
   if (name === 'acc') {
     var lead = on ? p.accLead : null;
     var leadCar = '<svg width="32" height="22" viewBox="0 0 40 26" fill="none" stroke="' + (lead !== null ? colour : '#E4E5E7') + '" stroke-width="3" aria-hidden="true"><rect x="8" y="2" width="24" height="22" rx="6"></rect><line x1="12" y1="17" x2="28" y2="17"></line></svg>';
-    var side = (p.accWaiting && on) || standby ? chipText('PRESS ACC', '#D97706', '#FDEDD3')
+    var side = (p.accWaiting && on) || standby ? chipText('PRESS ACC<br>TO RESUME', '#D97706', '#FDEDD3')
       : '<span style="width: 72px; text-align: right; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; color: #5C5E62">' + (lead !== null ? esc(lead) + ' m' : '') + '</span>';
     return open + '<span style="color: ' + colour + '">' + icon('acc', 64) + '</span>' + speedText(p.setSpeed) +
       '<div style="display: flex; flex-direction: column; align-items: center; gap: 5px">' + leadCar + bars + '</div>' + side + '</div>';
@@ -976,12 +976,18 @@ var CHIMES = {
   autopilotOff: { wave: 'sine', volume: 0.2, notes: [[783.99, 0, 0.5], [659.25, 0.14, 0.5], [523.25, 0.28, 0.5], [392.0, 0.42, 1.4], [196.0, 0.42, 1.4]] }
 };
 var audio = null;
+// When the last chime's notes have all started, plus a beat: a chime asked
+// for before then (a tip done by switching an assist on, say) waits its turn
+// instead of sounding over the other.
+var chimeFreeAt = 0;
+var CHIME_BEAT = 0.45;
 function chime(name) {
   var c = CHIMES[name];
   try {
     audio = audio || new (window.AudioContext || window.webkitAudioContext)();
     if (audio.state === 'suspended') audio.resume();
-    var t = audio.currentTime + 0.03;
+    var t = Math.max(audio.currentTime + 0.03, chimeFreeAt);
+    chimeFreeAt = t + Math.max.apply(null, c.notes.map(function (n) { return n[1]; })) + CHIME_BEAT;
     c.notes.forEach(function (note) {
       var osc = audio.createOscillator();
       var gain = audio.createGain();

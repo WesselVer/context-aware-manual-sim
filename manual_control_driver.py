@@ -50,7 +50,7 @@ speed buttons, standby and resume apply. Pressing one assist's button while
 the other is on switches over to it.
 
 Autopilot (the wheel's autopilot button, or K) drives the car around the map
-on CARLA's Traffic Manager, slowly (30 km/h to start) and in Eco; the wheel
+on CARLA's Traffic Manager, at 60 km/h to start and in Eco; the wheel
 turns with the car. + and - change its speed, d-pad up and down its following
 distance. Braking, leaving D, or turning the wheel against it (it resists
 at first) hands the car back, in the drive mode it had before. The
@@ -113,6 +113,7 @@ Use ARROWS or WASD keys for control.
     T            : toggle vehicle's telemetry
 
     B            : start the context-aware manual
+    P            : skip the tip on screen (or the one it waits for), for testing
     hold R       : context-aware manual off
     hold Z (5 s) : reset for the next participant (a tap is still the left blinker)
     F            : start the scored free drive at the end of the test; again to end it
@@ -297,6 +298,22 @@ DRIVER_EYES = [
     ('vehicle.mini.cooper_s_2021', carla.Location(x=-0.20, y=-0.45, z=1.30)),
 ]
 
+# The tyres' longitudinal stiffness, capped per car. At CARLA 0.9.16's stock
+# values (3000-4000) a car slowing to a stop snaps from about 5 to 2 km/h in
+# 60 ms, near 2 g: the jolt felt at the end of a regen stop. It is the same
+# with any brake force, gear or neutral; measured on 2026-11-11. These are the
+# highest caps that remove it. A full stop from 50 km/h takes 0.5-5 m longer
+# (most for the Patrol, which also pulls away slower: 0-50 km/h in 3.6 s, not
+# 2.9), and lifting off at a standstill creeps at about 3.7 km/h, not 2.
+TYRE_LONG_STIFFNESS = {
+    'vehicle.lincoln.mkz_2020': 2100,
+    'vehicle.dodge.charger_2020': 1500,
+    'vehicle.nissan.patrol_2021': 1000,
+    'vehicle.ford.crown': 1000,
+    'vehicle.mini.cooper_s_2021': 2100,
+}
+TYRE_LONG_STIFFNESS_DEFAULT = 1000
+
 
 # Drive modes the paddles step through: the throttle response, the regen
 # level the mode starts with, and the force-feedback strength. Eco caps the
@@ -357,7 +374,7 @@ ACC_AUTO_GO_SECONDS = 3.0
 # in, and the takeover: the brake pedal past AUTOPILOT_BRAKE, or the wheel
 # held AUTOPILOT_TAKEOVER_DEG away from the car's steering for
 # AUTOPILOT_TAKEOVER_SECONDS without coming back.
-AUTOPILOT_KMH = 30
+AUTOPILOT_KMH = 60
 AUTOPILOT_MIN_KMH = 10
 AUTOPILOT_MAX_KMH = 90
 AUTOPILOT_DRIVE_MODE = 0
@@ -906,6 +923,11 @@ class World(object):
         try:
             physics_control = actor.get_physics_control()
             physics_control.use_sweep_wheel_collision = True
+            cap = TYRE_LONG_STIFFNESS.get(actor.type_id, TYRE_LONG_STIFFNESS_DEFAULT)
+            wheels = physics_control.wheels
+            for wheel in wheels:
+                wheel.long_stiff_value = min(wheel.long_stiff_value, cap)
+            physics_control.wheels = wheels
             actor.apply_physics_control(physics_control)
         except Exception:
             pass
@@ -1137,6 +1159,11 @@ class KeyboardControl(object):
                     world.hud.notification(self._tips.start())
                     if self._drive_log is not None and not self._drive_log.running:
                         self._start_test(client, world)
+                elif event.key == K_p and self._tips is not None and not pygame.key.get_mods() & KMOD_CTRL:
+                    skipped = self._tips.skip()
+                    if skipped and self._drive_log is not None and self._drive_log.running:
+                        self._drive_log.event('tip-skipped', skipped)
+                    world.hud.notification('Tip skipped: %s' % skipped if skipped else 'No tip to skip')
                 elif event.key == K_j:
                     self.layout = 'minimal' if self.layout == 'full' else 'full'
                     world.hud.notification('Dashboard: %s layout' % self.layout)

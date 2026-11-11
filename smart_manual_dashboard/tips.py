@@ -129,7 +129,7 @@ TIPS = [
     dict(id='cc-brake',
          title='Tap the brake to switch cruise control off',
          body='Cruise control lets go the moment you touch the brake, so you are always in '
-              'control. It remembers your speed: CC picks it up again.',
+              'control. It remembers your speed: press CC again to resume.',
          highlight=['cruise', 'brake'],
          gesture='press-brake',
          action='Touch the brake pedal.',
@@ -139,11 +139,11 @@ TIPS = [
          need=lambda tips: 'drive %d s more with cruise control on (or switch it off)' % _left(20.0 - tips.used('Cruise')),
          expect=['cruise'],
          done_title='Cruise control let go',
-         done_body='You are driving yourself again. Press CC to go back to your set speed.'),
+         done_body='You are driving yourself again. Press CC again to resume your set speed.'),
     dict(id='cc-resume',
          title='Pick up your speed again after braking',
-         body='Braking put cruise control on standby. Press CC and the car goes back to the '
-              'speed you had set.',
+         body='Braking put cruise control on standby. Press CC again to resume the speed '
+              'you had set.',
          highlight=['cruise'],
          control=dict(button='cc', press='tap', label='CC'),
          action='Press CC once.',
@@ -230,7 +230,7 @@ TIPS = [
     dict(id='ap-speed',
          title='Set how fast the autopilot drives',
          body='With the autopilot on, the top and bottom buttons change its speed in 5 km/h '
-              'steps. It starts at a calm 30 km/h.',
+              'steps. It starts at 60 km/h.',
          highlight=['autopilot'],
          control=dict(button=['speed-up', 'speed-down'], press='tap', label='SPEED + / −'),
          action='Press the top or bottom button once.',
@@ -372,6 +372,22 @@ class Tips(object):
             self._tip = self._done_until = None
             self.paused = True
             self._log('paused')
+
+    def skip(self):
+        """For testing: drops the tip on screen, or the one the manual waits
+        for, and lets the next come at its moment; returns its id or None."""
+        if not self.running or self.paused:
+            return None
+        tip = self._tip or (self._queue[0] if self._queue else None)
+        if tip is None:
+            return None
+        now = self._clock()
+        self._queue.remove(tip)
+        self._tip = self._done_until = None
+        self._last_tip = now - TIP_GAP_SECONDS
+        self._turn_since = now
+        self._log('%s skipped by the tester' % tip['id'])
+        return tip['id']
 
     @property
     def driving_yourself(self):

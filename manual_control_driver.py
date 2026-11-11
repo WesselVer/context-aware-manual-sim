@@ -204,6 +204,7 @@ try:
 except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
 
+from cabin_wheel import CabinWheel
 from smart_manual_dashboard import Dashboard, focus_window
 from smart_manual_dashboard.drive_log import DATA_DIR, DriveLog
 from smart_manual_dashboard.tips import Tips
@@ -766,6 +767,9 @@ class World(object):
         self.radar_sensor = None
         self.camera_manager = None
         self.mirrors = None
+        self.cabin_wheel = None
+        self._steer_ratio = args.steer_ratio
+        self._turn_wheel = args.turn_wheel
         self._weather_presets = find_weather_presets()
         self._weather_index = 0
         self._actor_filter = args.filter
@@ -879,6 +883,9 @@ class World(object):
         self.camera_manager.transform_index = cam_pos_index
         self.camera_manager.set_sensor(cam_index, notify=False)
         self.mirrors = Mirrors(self.player, self.hud.dim, self._gamma)
+        # Off by default: about 5 ms a frame (cabin_wheel.py).
+        if self._turn_wheel:
+            self.cabin_wheel = CabinWheel(self.player, driver_eye(self.player), self.hud.dim, self._steer_ratio)
         actor_type = get_actor_display_name(self.player)
         self.hud.notification(actor_type)
         self.traffic_manager.update_vehicle_lights(self.player, True)
@@ -936,9 +943,12 @@ class World(object):
 
     def render(self, display):
         self.camera_manager.render(display)
-        # The mirrors belong to the driver's seat, the first camera position.
-        if self.mirrors is not None and self.camera_manager.transform_index == 0:
-            self.mirrors.render(display)
+        # The steering wheel and the mirrors belong to the driver's seat, the first camera position.
+        if self.camera_manager.transform_index == 0:
+            if self.cabin_wheel is not None:
+                self.cabin_wheel.draw(display, self.camera_manager.array)
+            if self.mirrors is not None:
+                self.mirrors.render(display)
         self.hud.render(display)
 
     def destroy_sensors(self):
@@ -952,6 +962,9 @@ class World(object):
         if self.mirrors is not None:
             self.mirrors.destroy()
             self.mirrors = None
+        if self.cabin_wheel is not None:
+            self.cabin_wheel.destroy()
+            self.cabin_wheel = None
         sensors = [
             self.camera_manager.sensor,
             self.collision_sensor.sensor,
@@ -990,9 +1003,30 @@ class Mirrors(object):
         ('interior', (480, 130), 55, (0.50, 0.03, 0.30)),
         ('door', (300, 200), 45, (0.11, 0.52, 0.17)),
     ]
+    # The interior mirror is drawn on the car's own: the centre of its glass
+    # in the driver's view (shares of the window, x and y), read off a
+    # screenshot of each car; kept whole on screen, so the Lincoln's and the
+    # Mini's, which the screen's edge cuts, sit a little left of it. The
+    # Crown's is above the view, so it goes in the top right corner.
+    INTERIOR_WIDTH = 0.26
+    INTERIOR_CENTRE = {
+        'vehicle.lincoln.mkz_2020': (0.89, 0.322),
+        'vehicle.dodge.charger_2020': (0.825, 0.36),
+        'vehicle.nissan.patrol_2021': (0.775, 0.395),
+        'vehicle.ford.crown': (0.85, 0.07),
+        'vehicle.mini.cooper_s_2021': (0.94, 0.25),
+    }
 
     def __init__(self, vehicle, screen, gamma):
         self._screen = screen
+        self._places = {name: place for name, _, _, place in self.LAYOUT}
+        centre = self.INTERIOR_CENTRE.get(vehicle.type_id)
+        if centre is not None:
+            (w, h), share = self.LAYOUT[0][1], self.INTERIOR_WIDTH
+            height = share * screen[0] * h / w / screen[1]
+            cx = max(share / 2 + 0.005, min(1.0 - share / 2 - 0.005, centre[0]))
+            top = max(0.005, centre[1] - height / 2)
+            self._places['interior'] = (cx, top, share)
         self._surfaces = {}
         self._sensors = []
         world = vehicle.get_world()
@@ -1030,7 +1064,8 @@ class Mirrors(object):
 
     def render(self, display):
         sw, sh = self._screen
-        for name, (w, h), _, (cx, top, share) in self.LAYOUT:
+        for name, (w, h), _, _ in self.LAYOUT:
+            cx, top, share = self._places[name]
             surface = self._surfaces.get(name)
             if surface is None:
                 continue
@@ -2154,6 +2189,7 @@ class CameraManager(object):
     def __init__(self, parent_actor, hud, gamma_correction):
         self.sensor = None
         self.surface = None
+        self.array = None
         self._parent = parent_actor
         self.hud = hud
         self.recording = False
@@ -2306,6 +2342,8 @@ class CameraManager(object):
             array = array[:, :, :3]
             array = array[:, :, ::-1]
             self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+            # The plain camera's pixels, for the steering wheel to turn in (CabinWheel).
+            self.array = array if self.sensors[self.index][0] == 'sensor.camera.rgb' else None
         if self.recording:
             image.save_to_disk('_out/%08d' % image.frame)
 
@@ -2529,6 +2567,10 @@ def main():
     argparser.add_argument(
         '--steer-ratio', metavar='R', default=14.0, type=float,
         help='degrees of wheel per degree of front-wheel angle (default: 14)')
+    argparser.add_argument(
+        '--turn-wheel', action='store_true',
+        help='turn the car\'s own steering wheel in the driver\'s view with the steering '
+             '(cabin_wheel.py; costs about 5 ms a frame, so off by default)')
     argparser.add_argument(
         '--ffb-gain', metavar='G', default=1.0, type=float,
         help='force-feedback strength, 1 = full (default: 1)')

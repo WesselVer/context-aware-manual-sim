@@ -99,7 +99,28 @@ FEATURE_NAMES = {
     'gap-change': 'Following gap',
     'regen-max': 'One-pedal driving',
     'ap-override': 'Overriding the autopilot',
+    'cruise-off': 'Cruise control off',
+    'acc-off': 'Adaptive cruise off',
+    # The feature groups the score counts (FEATURE_GROUPS).
+    'leave-cruise': 'Leaving cruise (brake or button)',
+    'set-speed': 'Set speed + / -',
+    'mode-regen': 'Drive mode or regen',
 }
+
+# The free drive's feature score counts each of these once: one use of any
+# member counts for the group, so 100 does not need, say, the speed changed
+# under cruise, ACC and the autopilot each, or cruise left both ways. A
+# feature in no group counts on its own.
+FEATURE_GROUPS = {
+    'leave-cruise': ('brake-cancel', 'cruise-off', 'acc-off'),
+    'set-speed': ('speed-adjust', 'acc-speed-adjust', 'ap-speed'),
+    'mode-regen': ('mode-dynamic', 'regen-max'),
+}
+FEATURE_GROUP_OF = {f: g for g, members in FEATURE_GROUPS.items() for f in members}
+
+
+def feature_group(feature):
+    return FEATURE_GROUP_OF.get(feature, feature)
 
 COLUMNS = ['t', 'phase', 'x', 'y', 'speed', 'limit', 'assist', 'gear', 'drive_mode', 'regen',
            'pedal', 'throttle', 'brake', 'brake_pedal', 'steer', 'a_long', 'lateral', 'lane', 'junction',
@@ -234,18 +255,20 @@ def metrics(rows, events, prompted=()):
         takeovers=sum(1 for e in events if e['kind'] == 'takeover'))
     used = sorted(set(e['detail'] for e in events if e['kind'] == 'feature'))
     m['features_used'] = used
+    used_groups = set(feature_group(f) for f in used)
     m['prompted_features'] = list(prompted)
-    m['prompted_features_used'] = [f for f in prompted if f in used]
+    m['prompted_features_used'] = [f for f in prompted if feature_group(f) in used_groups]
     return m
 
 
 def prompted_features(events):
-    """The features the manual's tips prompted the driver to try (their learn ids), in order."""
+    """The feature groups (FEATURE_GROUPS) the manual's tips prompted the
+    driver to try, each once, in order."""
     out = []
     for e in events:
         learn = TIP_FEATURES.get(e['detail']) if e['kind'] == 'tip-shown' else None
-        if learn and learn not in out:
-            out.append(learn)
+        if learn and feature_group(learn) not in out:
+            out.append(feature_group(learn))
     return out
 
 
@@ -263,8 +286,9 @@ def score(m):
       Speed       the share of the moving time within the limit
       Smoothness  100, less 25 a harsh brake
       Features    the share of the features the tips prompted that the
-                  driver used again: do they remember how they work? Left
-                  out of the total when no tip was shown.
+                  driver used again: do they remember how they work? Each
+                  of FEATURE_GROUPS counts once. Left out of the total
+                  when no tip was shown.
     """
     minutes = max(m.get('duration_s', 0.0), 1.0) / 60.0
     per_min = lambda n: n / minutes

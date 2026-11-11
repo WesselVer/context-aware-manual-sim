@@ -106,7 +106,6 @@ Use ARROWS or WASD keys for control.
     ` or N       : next sensor
     [1-9]        : change to sensor [1-9]
     G            : toggle radar visualization
-    C            : change weather (Shift+C reverse)
     Backspace    : change vehicle
 
     O            : open/close all doors of vehicle
@@ -981,7 +980,8 @@ class Mirrors(object):
     are not free: the fewer images, the less the drive's frame rate drops.
     The interior one looks back from the roof's rear edge
     (through the cabin there is only the rear seats to see); the door one
-    from the left of the car, angled a little outwards.
+    from the left of the car, angled a little outwards, behind the car's own
+    mirror housing (any closer to the front, the housing shows in it).
     """
 
     # (name, image size, horizontal field of view, where on screen as shares
@@ -1000,7 +1000,7 @@ class Mirrors(object):
         mounts = {
             'interior': carla.Transform(carla.Location(x=-extent.x + 0.2, z=2.0 * extent.z + 0.05),
                                         carla.Rotation(yaw=180.0, pitch=-4.0)),
-            'door': carla.Transform(carla.Location(x=0.55 * extent.x - 0.6, y=-extent.y - 0.1, z=1.05),
+            'door': carla.Transform(carla.Location(x=0.55 * extent.x - 1.0, y=-extent.y - 0.15, z=1.05),
                                     carla.Rotation(yaw=195.0, pitch=-3.0)),
         }
         for name, (w, h), fov, _ in self.LAYOUT:
@@ -1184,10 +1184,6 @@ class KeyboardControl(object):
                     world.hud.help.toggle()
                 elif event.key == K_TAB:
                     world.camera_manager.toggle_camera()
-                elif event.key == K_c and pygame.key.get_mods() & KMOD_SHIFT:
-                    world.next_weather(reverse=True)
-                elif event.key == K_c:
-                    world.next_weather()
                 elif event.key == K_g:
                     world.toggle_radar()
                 elif event.key == K_BACKQUOTE:
@@ -2347,9 +2343,9 @@ def game_loop(args):
         if args.map and not sim_world.get_map().name.endswith('/' + args.map):
             print('Loading %s ...' % args.map)
             sim_world = client.load_world(args.map)
-            # Town04 starts grey and foggy; a clear day reads better on screen
-            # (C cycles the weather while driving).
-            sim_world.set_weather(carla.WeatherParameters.ClearNoon)
+        # Always a clear day, whatever the server had: Town04 starts grey and
+        # foggy, and every participant should drive in the same weather.
+        sim_world.set_weather(carla.WeatherParameters.ClearNoon)
         traffic_manager = client.get_trafficmanager(args.tm_port)
         if args.sync:
             original_settings = sim_world.get_settings()

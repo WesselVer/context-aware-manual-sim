@@ -612,7 +612,7 @@ class Tips(object):
                 events.append('acc-speed-adjust')
         if assist == prev == 'Autopilot' and state.get('apTarget') != prev_state.get('apTarget'):
             events.append('ap-speed')
-        if assist == prev == 'ACC' and state.get('accGap') != prev_state.get('accGap'):
+        if assist == prev and assist in ('ACC', 'Autopilot') and state.get('accGap') != prev_state.get('accGap'):
             events.append('gap-change')
         if assist == prev == 'Autopilot' and state.get('throttleOverride') and \
                 not prev_state.get('throttleOverride'):
